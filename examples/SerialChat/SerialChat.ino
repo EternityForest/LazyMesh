@@ -13,6 +13,7 @@ LazymeshNode node;
 
 class MyChannel : public LazymeshChannel {
   void onReceivePacket(JsonDocument& doc) {
+    Serial.println("Got Packet!");
     int dataID = 0;
     for (JsonVariant value : doc.as<JsonArray>()) {
       if (dataID == 0) {
@@ -62,6 +63,8 @@ void setup() {
     Serial.print(".");
   }
 
+  Serial.println("Local IP:");
+  Serial.println(WiFi.localIP());
 
   // Begin once the internet is set up
   transport.begin();
@@ -101,6 +104,8 @@ void loop() {
       d.add(username + ": " + buf);
       buf = "";
       Serial.println("Sending...");
+
+      channel.sendPacket(doc);
     } else {
       if (buf.size() < 120) {
         buf.push_back(c);

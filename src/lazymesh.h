@@ -96,7 +96,7 @@ private:
 
 public:
   // What TTL we send with packets
-  int outgoingTTL = 1;
+  int outgoingTTL = 3;
 
   // Gets set when adding the channel to the node
   LazymeshNode *meshNode = NULL;
@@ -147,8 +147,12 @@ public:
 
 
 
-  // Send a packet manually
+  // Send a raw encoded packet.  
+  // User applications should probably use the JsonDocument version.
   void sendPacket(const uint8_t *packet, int size);
+
+  // Send a packet 
+  void sendPacket(JsonDocument & packet);
 
   // Override this is your custom class
   virtual void onReceivePacket(JsonDocument & decoded);
@@ -241,6 +245,8 @@ public:
     {
       this->routes_bitmap[i] = 0;
     }
+    // Enable the default route 0
+    this->enableRoute(0);
   }
 };
 

@@ -1,7 +1,7 @@
 # LazyMesh
 ![image](img/lazymesh.avif)
 
-Mesh routing system that supports using an OpenDHT proxy as the backend, so that nodes can communicate directly via the internet.
+Mesh routing system that supports using an OpenDHT proxy as the backend, so that nodes can communicate directly via the internet. Very early pre alpha, proof of concept, might not actually work, etc.
 
 This is meant for both hobby/HAM use cases, and more typical consumer/commercial IoT work, but specifically does not
 try to replace the internet, or to cover large high traffic areas with omnidirectional antennas.  
@@ -14,8 +14,9 @@ It does not have Meshtastic-style next hop routing, hence the name LazyMesh.  If
 Right now this is the only actual application. Open the example Arduino sketch, modify it with your username,
 and a secret channel key which must be a strong password.
 
-Any two nodes set up with the same channel should be able to chat.  They will
+Type your message in the Arduino serial monitor, and you should be able to chat with all other devices.
 
+Messages should get through as long as nodes are either on the same network, or both have internet access.
 
 ## Features
 
@@ -48,6 +49,11 @@ In Lazymesh, everything is a channel, there are no direct messages. If you want 
 Channels are defined by a password, knowing the password allows read and write access.
 
 Data packets on a channel are Messagepack objects.  If they are an array, they must by a list of alternating data IDs and values, where data IDs are from a reserved list(TBD).
+
+## Route numbers
+
+There are 256 route numbers.  Every packet has one, and repeaters only repeat if  they have enabled a matching
+route number.  By default, everything is sent with route number 0, which is enabled by default.
 
 ## Transports
 

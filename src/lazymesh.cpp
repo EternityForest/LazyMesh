@@ -38,6 +38,16 @@ void LazymeshChannel::sendPacket(const uint8_t *packet, int size)
   this->meshNode->handlePacket(packet, size, NULL, this);
 }
 
+void LazymeshChannel::sendPacket(JsonDocument &packet) {
+  uint8_t buf[256];
+  serializeMsgPack(packet, (char *)buf, MAX_PACKET_SIZE-PACKET_OVERHEAD );
+  int len = strlen((char *)buf);
+  encodeDataToPacket(buf, &len, 0);
+  if(len){
+    this->sendPacket(buf, len);
+  }
+}
+
 // Override this is your custom class
 void LazymeshChannel::onReceivePacket(JsonDocument &decoded)
 {
@@ -222,13 +232,18 @@ void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdv
 
   packetbuffer[HEADER_1_BYTE_OFFSET] |= this->outgoingTTL << 2;
 
+  LAZYMESH_DEBUG("Outgoing TTL");
+  LAZYMESH_DEBUG(this->outgoingTTL);
+
   if (this->allowSlowTransport)
   {
+    LAZYMESH_DEBUG("Allowing slow transport");
     packetbuffer[HEADER_1_BYTE_OFFSET] |= 1 << SLOW_TRANSPORT_OFFSET;
   }
 
   if (this->allowGlobalRouting)
   {
+    LAZYMESH_DEBUG("Allowing global routing");
     packetbuffer[HEADER_1_BYTE_OFFSET] |= 1 << GLOBAL_ROUTE_OFFSET;
   }
 
@@ -847,6 +862,7 @@ void LazymeshNode::handlePacket(const uint8_t *incomingPacket, int size, Lazymes
     bool globalRoute = false;
     if (this->isRouteEnabled(meshRouteNumber) || this->isRouteEnabled(0) || source == NULL)
     {
+      LAZYMESH_DEBUG("Packet can be routed");
       // Assume that every node is only part of one global routing
       // And that there is no reason for any node to post
       // what we have already posted
@@ -855,6 +871,7 @@ void LazymeshNode::handlePacket(const uint8_t *incomingPacket, int size, Lazymes
 
       if (canGlobalRoute && !wasGlobalRouted)
       {
+        LAZYMESH_DEBUG("Packet can be global routed");
         for (std::vector<LazymeshTransport *>::iterator it = this->transports.begin(); it != this->transports.end(); ++it)
         {
           if ((*it) == source)
