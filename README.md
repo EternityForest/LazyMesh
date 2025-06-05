@@ -1,5 +1,6 @@
 # LazyMesh
-![image](img/lazymesh.avif)
+
+![Image](img/lazymesh.avif)
 
 Mesh routing system that supports using an OpenDHT proxy as the backend, so that nodes can communicate directly via the internet. Very early pre alpha, proof of concept, might not actually work, etc.
 
@@ -28,16 +29,17 @@ Messages should get through as long as nodes are either on the same network, or 
 * Replay attack protection (Messages are timestamped)
 * Pluggable Routing Backends(UDP and OpenDHT currently)
 * Mesh flooding
-* Limited source routing abilities, packets have a route ID number and routers can choose which routes to forward
+* Limited source routing abilities, packets have a mesh route number and routers can choose which routes to forward
 * Mesh payloads are MessagePack for extensibility and flexibility
 * Some kind of time sync within a minute or two is required
-* 37 bytes of overhead per packet.
+* 37 bytes of overhead per packet, 220 bytes max, including the overhead
 
 ## Time Sync
 
 Nodes need some way to sync the time to communicate. Currently, if they have never recieved time from a trusted source,
-they will set their time from any random packet they see.   This could be a security risk allowing replay attacks,
-so devices that need security should have a trusted time source.
+they will set their time from any random packet they see.
+
+This could be a security risk allowing replay attacks, so devices that need security should have a trusted time source.
 
 Once the time has been initially set, the code will adjust it's system time by up to 1 second per day to stay in sync with
 other nodes, so drifting out of sync should not be a major issue.
@@ -55,9 +57,9 @@ Data packets on a channel are Messagepack objects.  If they are an array, they m
 There are 256 route numbers.  Every packet has one, and repeaters only repeat if  they have enabled a matching
 route number.  By default, everything is sent with route number 0, which is enabled by default.
 
-## Transports
+This only affects repeaters, nodes will listen to any mesh route numberif it is directly for them.
 
-![image](img/telegrapher.avif)
+## Transports
 
 ### OpenDHT Routing
 
@@ -74,9 +76,75 @@ packets to a reciever that has internet access.
 Packets can only be globally routed if they have the global routing bit set.  Nodes that have already global
 routed a packet will unset this bit, so that other nodes don't do it redundantly.
 
+Packets coming from OpenDHT will have the "was global routed" bit set and can never go back on the internet,
+only one hop is allowed.
+
 The data format allows for metadata to be added in the future along with the packet.
 
 The OpenDHT keys change hourly, and all traffic to the DHT has an extra layer of encryption.
 
 ### UDP Routing
 
+Just the raw packets broadcast on 224.0.0.251:2221
+
+## Packet structure
+
+Nothing about this is finalized!!!
+
+```
+All numbers are little-endian.
+
+1 byte header:
+  2 bit packet type
+  3 bits TTL hops remaining
+  1 bit allow slow transport(LoRa etc)
+  1 bit allow global routing
+  1 bit was already global routed
+
+1 byte mesh route number
+
+1 byte path loss accumulated:
+    5 bits total
+    3 bits last hop
+    
+    Every hop is a point of path loss,
+    plus whatever extra cost heuristic the transport applies.
+    1 extra point of loss should be roughly the same "badness" as
+    10dbm extra loss on wifi.
+
+16 bytes routing ID:
+    Changes every hour, derived from the channel PSK bye a hash.
+    The PSK just the 16 byte SHA256 of the password.
+
+    The routing ID is the SHA256 of:
+        The letter 'r'
+        The count of hours since 1970 as a 32 bit unsigned int
+        the PSK
+
+
+
+
+8 Bytes random entropy:
+   Used as part of the IV for the cipher
+
+4 bytes timestamp:
+   Also part of the IV, also prevents replay attacks
+
+6 bytes auth tag:
+   The auth tag comes before the ciphertext because it(subjectively)
+   makes the code simpler.
+
+N bytes ciphertext:
+    AES-GCM encrypted.
+
+    The encryption key also changes hourly, and is the SHA256 of:
+        The letter 'r'
+        The count of hours since 1970 as a 32 bit unsigned int
+        the PSK
+```
+
+### Announce Packets
+Evey hour, a few minutes before the hour, nodes should send an announce of the channels they are interested in.
+
+This should be sent with the rolling codes for the *next* hour rather than the current hour, so that connections
+can be set up in advance and everything works even when times are out of sync.

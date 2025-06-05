@@ -224,8 +224,9 @@ void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdv
   // 3 bits TTL hops remaining
   // 1 bit allow slow transport
   // 1 bit allow global routing
+  // 1 bit was global routed
 
-  // Header byte 2
+
   // 8 bits route ID
 
   packetbuffer[HEADER_1_BYTE_OFFSET] = PACKET_TYPE_DATA;
