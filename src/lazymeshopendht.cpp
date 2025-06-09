@@ -124,7 +124,7 @@ LazymeshOpenDHTListener::LazymeshOpenDHTListener(const uint8_t *routing_id) {
 
   SHA256 sha256;
   sha256.reset();
-  sha256.update(routing_id, 16);
+  sha256.update(routing_id, ROUTING_ID_GROUP_PART_LEN);
   sha256.finalize(hashedRoutingID, 20);
 
   std::string hex = uint8_tToHex(hashedRoutingID, 20);
@@ -229,6 +229,11 @@ bool LazymeshOpenDHTTransport::globalRoutePacket(const uint8_t *packet, int size
     return false;
   }
 
+  if(size<PACKET_OVERHEAD){
+    LAZYMESH_DEBUG("Packet too small for DHT, probably a control packet");
+    return false;
+  }
+
   bool didRoute = false;
 
   bool isFromUs = totalPathLoss(packet) == 0;
@@ -266,7 +271,11 @@ bool LazymeshOpenDHTTransport::globalRoutePacket(const uint8_t *packet, int size
 
   SHA256 sha256;
   sha256.reset();
-  sha256.update(routingID, ROUTING_ID_LEN);
+  // Only use the part of the routing id that comes from the group key,
+  // to route the same group together
+  // this weakens the encryption, only 2**96 guesses to find the bottom half
+  // but we still have the inner cipher, this is just an opportunistic layer.
+  sha256.update(routingID, ROUTING_ID_GROUP_PART_LEN);
   sha256.finalize(hashedRoutingID, 20);
   std::string hex = uint8_tToHex(hashedRoutingID, 20);
 
@@ -399,7 +408,7 @@ void LazymeshOpenDHTTransport::poll() {
       if (gcm.checkTag(raw+OUTER_CIPHER_IV_LEN, OUTER_CIPHER_TAG_LEN)) {
         uint8_t metadataLength = ciphertext[0];
         const uint8_t *metadata = ciphertext +1;
-        const uint8_t *packet = ciphertext + metadataLength + 1;
+        uint8_t *packet = ciphertext + metadataLength + 1;
         uint32_t packetSize = size - OUTER_CIPHER_IV_LEN - OUTER_CIPHER_TAG_LEN - metadataLength - 1;
         if (packetSize > 220) {
           Serial.print(F("Packet too large: "));
@@ -409,7 +418,11 @@ void LazymeshOpenDHTTransport::poll() {
 
         LAZYMESH_DEBUG("Fully decoded packet from openDHT");
         LAZYMESH_DEBUG(packetSize);
-        this->node->handlePacket(packet, packetSize, this, nullptr);
+        LazymeshPacketMetadata meta;
+        meta.packet = packet;
+        meta.size = packetSize;
+        meta.transport = this;
+        this->node->handlePacket(meta);
       }
 
       else

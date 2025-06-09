@@ -15,12 +15,33 @@
 // As presumably we already know the C loss.
 uint8_t lastHopPathLoss(const uint8_t *packet)
 {
-  return packet[1] & 7;
+  return packet[PATH_LOSS_BYTE_OFFSET] & 7;
 }
 
 uint8_t totalPathLoss(const uint8_t *packet)
 {
-  return packet[1] >> 3;
+  return packet[PATH_LOSS_BYTE_OFFSET] >> 3;
+}
+
+LazymeshQueuedPacket::LazymeshQueuedPacket(uint8_t *newpacket, int len, int expectChannelListeners, int expectRepeaterListeners)
+{
+  this->expectChannelAck = expectChannelListeners;
+  this->expectRepeaterAck = expectRepeaterListeners;
+  this->packet.resize(len);
+
+  memcpy(this->packet.data(), newpacket, len);
+
+  memcpy(&this->packetID, newpacket, 4);
+
+  // Mark it as first send attemp from this node
+  this->packet[HEADER_2_BYTE_OFFSET] |= (1 << HEADER_2_FIRST_SEND_ATTEMPT_BIT);
+
+  this->expectAck = (packet[0] & 3) == PACKET_TYPE_DATA_RELIABLE;
+  this->timestamp = millis();
+}
+
+LazymeshQueuedPacket::~LazymeshQueuedPacket()
+{
 }
 
 LazymeshChannel::LazymeshChannel()
@@ -35,15 +56,26 @@ LazymeshChannel::~LazymeshChannel()
 // Send a packet manually
 void LazymeshChannel::sendPacket(const uint8_t *packet, int size)
 {
-  this->meshNode->handlePacket(packet, size, NULL, this);
+  uint8_t *buf = (uint8_t *)malloc(size);
+  memcpy(buf, packet, size);
+
+  LazymeshPacketMetadata meta;
+  meta.packet = buf;
+  meta.size = size;
+  meta.localChannel = this;
+
+  this->meshNode->handlePacket(meta);
+  free(buf);
 }
 
-void LazymeshChannel::sendPacket(JsonDocument &packet) {
+void LazymeshChannel::sendPacket(JsonDocument &packet, bool reliable)
+{
   uint8_t buf[256];
-  serializeMsgPack(packet, (char *)buf, MAX_PACKET_SIZE-PACKET_OVERHEAD );
+  serializeMsgPack(packet, (char *)buf, MAX_PACKET_SIZE - PACKET_OVERHEAD);
   int len = strlen((char *)buf);
-  encodeDataToPacket(buf, &len, 0);
-  if(len){
+  encodeDataToPacket(buf, &len, 0, reliable);
+  if (len)
+  {
     this->sendPacket(buf, len);
   }
 }
@@ -195,7 +227,7 @@ void LazymeshChannel::flushToSend(uint8_t *packet, int *size)
 }
 
 /* The packet array must have PACKET_OVERHEAD bytes of overhead room!! */
-void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdvance)
+void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdvance, bool reliable)
 {
   LAZYMESH_DEBUG("***encode packet***");
   // We can't send packets if we don't have the time,
@@ -226,10 +258,16 @@ void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdv
   // 1 bit allow global routing
   // 1 bit was global routed
 
-
   // 8 bits route ID
 
-  packetbuffer[HEADER_1_BYTE_OFFSET] = PACKET_TYPE_DATA;
+  if (reliable)
+  {
+    packetbuffer[HEADER_1_BYTE_OFFSET] = PACKET_TYPE_DATA_RELIABLE;
+  }
+  else
+  {
+    packetbuffer[HEADER_1_BYTE_OFFSET] = PACKET_TYPE_DATA;
+  }
 
   packetbuffer[HEADER_1_BYTE_OFFSET] |= this->outgoingTTL << 2;
 
@@ -252,6 +290,9 @@ void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdv
 
   LAZYMESH_DEBUG("Outgoing Header byte 1");
   LAZYMESH_DEBUG(packetbuffer[HEADER_1_BYTE_OFFSET]);
+
+  // Mark that this is the first send attempt
+  packetbuffer[HEADER_2_BYTE_OFFSET] |= (1 << HEADER_2_FIRST_SEND_ATTEMPT_BIT);
 
   // The path loss info byte.  It starts at 0 because there has been 0 path loss.
   packetbuffer[PATH_LOSS_BYTE_OFFSET] = 0;
@@ -320,24 +361,10 @@ int getPacketTTL(const uint8_t *packet)
   return (header >> 2) & 7;
 }
 
-uint8_t decrementTTLInPlace(uint8_t *packet)
-{
-  uint8_t header = packet[HEADER_1_BYTE_OFFSET];
-  uint8_t withoutTTL = header & ~(7 << 2);
-  uint8_t ttl = (header >> 2) & 7;
-  if (ttl > 0)
-  {
-    ttl--;
-    packet[HEADER_1_BYTE_OFFSET] = withoutTTL | ((ttl - 1) << 2);
-  }
-  return ttl;
-}
-
 /* Compute the rolling code hash of the current hour and the next closest hour
  */
 void LazymeshChannel::computeTargetHash(bool force)
 {
-
   // Compute every few minutes.
   if (lastComputedTargetHash > millis() - 240)
   {
@@ -384,13 +411,18 @@ void LazymeshChannel::getTargetHashForTime(uint32_t timestamp, uint8_t *output)
   to_hash[0] = 'r';
 
   uint32_t hours = timestamp / 3600;
-  memcpy(to_hash + 1, &hours, 4);    // flawfinder: ignore
-  memcpy(to_hash + 5, groupKey, 16); // flawfinder: ignore
+  memcpy(to_hash + 1, &hours, 4); // flawfinder: ignore
+  memcpy(to_hash + 5, psk, 16);   // flawfinder: ignore
 
   SHA256 sha256;
   sha256.reset();
   sha256.update(to_hash, 21);
-  sha256.finalize(&output, 16);
+  sha256.finalize(output, 16);
+
+  memcpy(to_hash + 5, groupKey, 16); // flawfinder: ignore
+  sha256.reset();
+  sha256.update(to_hash, 21);
+  sha256.finalize(output, ROUTING_ID_GROUP_PART_LEN);
 }
 
 void LazymeshChannel::setChannel(const char *password)
@@ -415,18 +447,22 @@ void LazymeshChannel::setChannel(const char *password, const char *group)
   computeTargetHash(true);
 }
 
-void LazymeshChannel::handlePacket(const uint8_t *packet, int size)
+bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
 {
+
+  int size = meta.size;
+  uint8_t *packet = meta.packet;
+
   LAZYMESH_DEBUG("***handlePacket***")
   LAZYMESH_DEBUG(size);
   if (size < PACKET_OVERHEAD)
   {
-    return;
+    return false;
   }
   if (size > MAX_PACKET_SIZE)
   {
     LAZYMESH_DEBUG("Packet too big");
-    return;
+    return false;
   }
 
   LAZYMESH_DEBUG("Got packet");
@@ -436,13 +472,13 @@ void LazymeshChannel::handlePacket(const uint8_t *packet, int size)
   // Get the header which is 1+1+4+2+4=12 bytes
   uint8_t header = packetPointer[HEADER_1_BYTE_OFFSET];
 
-  uint8_t packetType = header & PACKET_TYPE_BITMASK
+  uint8_t packetType = header & PACKET_TYPE_BITMASK;
 
-                                    LAZYMESH_DEBUG("Packet type");
+  LAZYMESH_DEBUG("Packet type");
   LAZYMESH_DEBUG(packetType);
-  if (packetType != PACKET_TYPE_DATA)
+  if (packetType != PACKET_TYPE_DATA && packetType != PACKET_TYPE_DATA_RELIABLE)
   {
-    return;
+    return false;
   }
 
   uint8_t ttl = (header >> TTL_OFFSET) & TTL_BITMASK;
@@ -617,6 +653,8 @@ void LazymeshChannel::handlePacket(const uint8_t *packet, int size)
   {
     this->meshNode->setTime(unixTime, LAZYMESH_TIME_TRUST_LEVEL_TRUSTED);
   }
+
+  return trusted;
 }
 void LazymeshChannel::poll()
 {
@@ -678,9 +716,15 @@ void LazymeshTransport::begin()
 {
 }
 
-void LazymeshTransport::sendPacket(const uint8_t *x, int y)
+void LazymeshTransport::cancelRepeating(const uint8_t *packet)
 {
   // LAZYMESH_DEBUG("Dummy transport sending packet");
+}
+
+bool LazymeshTransport::sendPacket(const uint8_t *x, int y)
+{
+  // LAZYMESH_DEBUG("Dummy transport sending packet");
+  return true;
 }
 
 // Just say we can't route it
@@ -689,230 +733,12 @@ bool LazymeshTransport::globalRoutePacket(const uint8_t *x, int y)
   return false;
 }
 
-void LazymeshNode::poll()
-{
-  for (std::vector<LazymeshTransport *>::iterator it = this->transports.begin(); it != this->transports.end(); ++it)
-  {
-    (*it)->poll();
-  }
-  for (std::vector<LazymeshChannel *>::iterator it = this->channels.begin(); it != this->channels.end(); ++it)
-  {
-    (*it)->poll();
-  }
-}
-
-void LazymeshNode::setTime(unsigned long unix_time, LazymeshTimeTrustLevel trust_level)
-{
-  // If we have a recent trusted time, ignore untrusted time.
-  LAZYMESH_DEBUG("Set time attempt");
-  uint32_t old = this->getUnixTime();
-
-  // Trusted time within a day locks out anything else
-  if (!((trust_level == LAZYMESH_TIME_TRUST_LEVEL_TRUSTED) || (trust_level == LAZYMESH_TIME_TRUST_LEVEL_LOCAL)))
-  {
-    if ((millis() - last_got_trusted_time < 86400000) && last_got_trusted_time > 0)
-    {
-      return;
-    }
-  }
-
-  // Any old time is better than nothing for the first time?
-  if ((trust_level == LAZYMESH_TIME_TRUST_LEVEL_LOCAL) || this->millis_timestamp == 0)
-  {
-    millis_timestamp = millis();
-    unix_time_at_millis = unix_time;
-    if ((trust_level == LAZYMESH_TIME_TRUST_LEVEL_LOCAL))
-    {
-      last_got_trusted_time = millis();
-    }
-  }
-
-  // Allow 1 second per day adjustment from trusted but not local time
-  else if ((trust_level == LAZYMESH_TIME_TRUST_LEVEL_TRUSTED))
-  {
-    if (millis() - this->millis_timestamp > 86400000)
-    {
-      unsigned long t = this->getUnixTime();
-      if (t > unix_time)
-      {
-        t++;
-      }
-      else if (t < unix_time)
-      {
-        t--;
-      }
-
-      unix_time_at_millis = t;
-      millis_timestamp = millis();
-    }
-  }
-
-  int64_t now = getUnixTime();
-  now -= old;
-  // Recompute on time change
-  if (abs(now) > 60)
-  {
-    for (std::vector<LazymeshChannel *>::iterator it = this->channels.begin(); it != this->channels.end(); ++it)
-    {
-      (*it)->computeTargetHash(true);
-    }
-  }
-}
-
-unsigned long LazymeshNode::getUnixTime()
-{
-  return unix_time_at_millis + (millis() - millis_timestamp) / 1000;
-}
-
-bool LazymeshNode::hasSeenPacket(const uint8_t *packet)
-{
-  // Maintain a list of the last 1024 packets.  This should use about 20kb of RAM
-  // We make sure the packet IDs have the timestamp so we can sort oldest to newest
-  if (this->seenPackets.size() > 1024)
-  {
-    this->seenPackets.erase(this->seenPackets.begin());
-  }
-
-  const uint8_t *packetPointer = packet;
-
-  // Now we are at the crypto ID, skip 4 so we get 4 random bytes then the high order
-  // part is the timestamp, giving us a 64 bit ordered ID
-  packetPointer += RANDOMNESS_BYTE_OFFSET + 4;
-
-  uint32_t oldest_timestamp = (*this->seenPackets.begin()) >> 32;
-  uint32_t incoming_timestamp = (*reinterpret_cast<const uint32_t *>(packetPointer + 4));
-
-  // If it is older than the oldest we have seen, assume we saw it already but forgot
-  if (incoming_timestamp < oldest_timestamp)
-  {
-    // However, if it's so old that it would be caught by the timestamp filter at a higher level,
-    // assume it's new but someone is out of sync, this is a problem for the higher layer that may decide to sync
-    // on it.  We don't know the actual time here because each channel could have a different idea of what time it is.
-    if (incoming_timestamp > (oldest_timestamp - 120))
-    {
-      return true;
-    }
-  }
-
-  bool seen = seenPackets.find(*reinterpret_cast<const uint64_t *>(packetPointer)) != seenPackets.end();
-  if (!seen)
-  {
-    seenPackets.insert(*reinterpret_cast<const uint64_t *>(packetPointer));
-  }
-  return seen;
-};
-
-void LazymeshNode::handlePacket(const uint8_t *incomingPacket, int size, LazymeshTransport *source, LazymeshChannel *localChannel)
-{
-
-  if (size > 220)
-  {
-    LAZYMESH_DEBUG("Too big");
-    return;
-  }
-  if (size < PACKET_OVERHEAD)
-  {
-    LAZYMESH_DEBUG("Too small");
-    return;
-  }
-
-  uint8_t packetType = incomingPacket[HEADER_1_BYTE_OFFSET] & 0b11;
-
-  if (packetType != PACKET_TYPE_DATA)
-  {
-    LAZYMESH_DEBUG("Not a data packet");
-    return;
-  }
-
-  // Bootstrap the time, if we don't have a local time, just accept any random time
-  // and see if that lets us decode anything.
-  uint32_t unixTime = *reinterpret_cast<const uint32_t *>(incomingPacket + TIME_BYTE_OFFSET);
-  setTime(unixTime, LAZYMESH_TIME_TRUST_LEVEL_NONE);
-
-  uint8_t packet[256];
-  memcpy(packet, incomingPacket, size);
-
-  // This also marks sent
-  if (this->hasSeenPacket(packet))
-  {
-    LAZYMESH_DEBUG("Duplicate packet");
-    return;
-  }
-
-  // If we are configured to route for this meshRouteNumber, route it flood style out everything.
-  // Also always route our own packets
-  uint8_t meshRouteNumber = packet[MESH_ROUTE_NUMBER_BYTE_OFFSET];
-
-  // Don't try to decode our own keepalives and spam logs in the process
-  if (size > PACKET_OVERHEAD || source)
-  {
-    // Try all the channels and see if they have a use for this packet
-    for (std::vector<LazymeshChannel *>::iterator it = this->channels.begin(); it != this->channels.end(); ++it)
-    {
-      if (localChannel != (*it))
-      {
-        (*it)->handlePacket(packet, size);
-      }
-    }
-  }
-
-  if (getPacketTTL(packet) > 0)
-  {
-    decrementTTLInPlace(packet);
-
-    bool globalRoute = false;
-    if (this->isRouteEnabled(meshRouteNumber) || this->isRouteEnabled(0) || source == NULL)
-    {
-      LAZYMESH_DEBUG("Packet can be routed");
-      // Assume that every node is only part of one global routing
-      // And that there is no reason for any node to post
-      // what we have already posted
-      bool canGlobalRoute = packet[0] & (1 << 6);
-      bool wasGlobalRouted = packet[0] & (1 << 7);
-
-      if (canGlobalRoute && !wasGlobalRouted)
-      {
-        LAZYMESH_DEBUG("Packet can be global routed");
-        for (std::vector<LazymeshTransport *>::iterator it = this->transports.begin(); it != this->transports.end(); ++it)
-        {
-          if ((*it) == source)
-          {
-            continue;
-          }
-          globalRoute = (*it)->globalRoutePacket(packet, size);
-          if (globalRoute)
-          {
-            break;
-          }
-        }
-      }
-
-      // Clear the canGlobalRoute bit so that nobody else global routes
-      // what we already have.
-      if (globalRoute)
-      {
-        packet[0] &= ~(1 << 6);
-      }
-
-      for (std::vector<LazymeshTransport *>::iterator it = this->transports.begin(); it != this->transports.end(); ++it)
-      {
-        if ((*it) == source)
-        {
-          continue;
-        }
-        (*it)->sendPacket(packet, size);
-      }
-    }
-  }
-}
-
 LazymeshUDPTransport::LazymeshUDPTransport()
 {
 }
 
 void LazymeshUDPTransport::begin()
 {
-
   LAZYMESH_DEBUG("UDP transport begin");
   udp.connect(MCAST_GROUP, MCAST_PORT);
   if (udp.listenMulticast(MCAST_GROUP, MCAST_PORT, 16))
@@ -951,9 +777,8 @@ void LazymeshUDPTransport::begin()
   }
 }
 
-void LazymeshUDPTransport::sendPacket(const uint8_t *packet, int size)
+bool LazymeshUDPTransport::sendPacket(const uint8_t *packet, int size)
 {
-
   uint8_t buf[256];
   memcpy(buf, packet, size);
 
@@ -969,6 +794,8 @@ void LazymeshUDPTransport::sendPacket(const uint8_t *packet, int size)
 
   LAZYMESH_DEBUG("UDP Send");
   udp.write(buf, size);
+
+  return true;
 }
 
 LazymeshUDPTransport::~LazymeshUDPTransport()
@@ -988,7 +815,12 @@ void LazymeshUDPTransport::poll()
     this->packetQueue.pop();
     if (this->node)
     {
-      this->node->handlePacket(packet + 1, size, this, nullptr);
+      LazymeshPacketMetadata meta;
+      meta.packet = packet + 1;
+      meta.size = size;
+      meta.transport = this;
+
+      this->node->handlePacket(meta);
     }
     free(packet);
   }

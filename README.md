@@ -95,11 +95,21 @@ Nothing about this is finalized!!!
 All numbers are little-endian.
 
 1 byte header:
-  2 bit packet type
+  2 bit packet type(Either 1 or 2, depending on if we want ACK)
   3 bits TTL hops remaining
   1 bit allow slow transport(LoRa etc)
   1 bit allow global routing
   1 bit was already global routed
+
+1 byte header 2:
+    1 bit first send attempt:
+        Whenever we create a  or recieve a packet, set this bit.  After trying to send it,
+        clear it.  This way, as long as we assume packet loss is low-ish, we can count the repeaters in the area
+        without extra overhead.
+
+    7 reserved 0 bits
+
+
 
 1 byte mesh route number
 
@@ -113,15 +123,26 @@ All numbers are little-endian.
     10dbm extra loss on wifi.
 
 16 bytes routing ID:
-    Changes every hour, derived from the channel PSK bye a hash.
+    Changes every hour, derived from the channel PSK byte a hash.
     The PSK just the 16 byte SHA256 of the password.
+    The group key is the 16 byte sha256 of a different password, or just the
+    same as the psk if no group is being used.
 
-    The routing ID is the SHA256 of:
+    The first 12 bytes are the first 12 bytes of the  SHA256 of:
+        The letter 'r'
+        The count of hours since 1970 as a 32 bit unsigned int
+        the group key
+
+    The remaining 4 bytes are the last 4 bytes of the  SHA256 of:
         The letter 'r'
         The count of hours since 1970 as a 32 bit unsigned int
         the PSK
 
+    If the group key and psk are the same, then the whole thing
+    is equivalent to if you'd just hashed ('r'+hours+group key).
 
+    The separate group key is so that multiple channels can route together
+    and save space in routing tables or OpenDHT connection lists.
 
 
 8 Bytes random entropy:
@@ -141,6 +162,49 @@ N bytes ciphertext:
         The letter 'r'
         The count of hours since 1970 as a 32 bit unsigned int
         the PSK
+```
+
+## ACK Packets and Retries
+
+Some implementations may choose to entirely ignore this.
+
+Ack packets are not repeated or routed or anything, nor are they authenticated.  Every step of mesh repeating
+has it's own acknowlegement, from the original sender's perspective, it's fire and forget.
+
+Like Meshtastic and most others, the protocol is "semi-reliable", there are, like all networks, edge cases causing failure.  
+
+Real reliability must be done at a higher level.
+
+For every packet, every interested listener and every repeater sends an acknowledge exactly once.
+
+ACKs never get repeated even if the packet itself is, which makes it possible to approximately know the number
+of listeners by averaging the ACKs.
+
+This means that any ACK getting lost will cause the sender to send the message over and over. For this reason, we
+must set a fairly low limit to the number of retries.
+
+
+No matter how many responses we typically get, a node should never expect more than 8 channel replies and 4 repeater replies.
+If there are more listeners than this, the protocol becomes semi-reliable.
+
+If a node has seen more than this number of acknowledgements, it can choose to not send it's own, to avoid congesting the network.
+
+
+```
+1 byte header:
+   Always 0, packet type is control, and these are not routable or repeatable
+
+1 byte header 2:
+   Same as on the data packets. Not really used at the moment
+
+1 byte subtype:
+   CONTROL_TYPE_CHANNEL_ACKNOWLEDGE or CONTROL_TYPE_REPEATER_ACKNOWLEDGE
+   You can acknowlege as a channel listener or as a repeater,
+   so the sender knows how many of each there are.
+
+4 byte message ID:
+  just the first 4 bytes of the random IV from the packet we are ACKing
+
 ```
 
 ### Announce Packets
