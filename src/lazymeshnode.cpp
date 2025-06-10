@@ -366,6 +366,7 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
 
     if (getPacketTTL(packet) > 0)
     {
+        LAZYMESH_DEBUG("Packet still has hops left");
         decrementTTLInPlace(packet);
 
         bool globalRoute = false;
@@ -447,18 +448,20 @@ void LazymeshNode::handlePacket(LazymeshPacketMetadata &meta)
     int size = meta.size;
     LazymeshChannel *localChannel = meta.localChannel;
     LazymeshTransport *source = meta.transport;
-    if (size > 220)
+    
+    if (size > MAX_PACKET_SIZE)
     {
         LAZYMESH_DEBUG("Too big");
         return;
     }
-    if (size < PACKET_OVERHEAD)
+    if (size < 2)
     {
         LAZYMESH_DEBUG("Too small");
         return;
     }
 
     uint8_t packetType = incomingPacket[HEADER_1_BYTE_OFFSET] & 0b11;
+
 
     if (packetType == PACKET_TYPE_CONTROL)
     {
@@ -468,6 +471,10 @@ void LazymeshNode::handlePacket(LazymeshPacketMetadata &meta)
     // This also does the routing, control packets don't get hop routed
     else if (packetType == PACKET_TYPE_DATA || packetType == PACKET_TYPE_DATA_RELIABLE)
     {
+        if(size<PACKET_OVERHEAD){
+            LAZYMESH_DEBUG("Too small to be a data packet");
+            return;
+        }
         this->handleDataPacket(incomingPacket, size, source, localChannel);
     }
 }

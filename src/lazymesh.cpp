@@ -56,6 +56,7 @@ LazymeshChannel::~LazymeshChannel()
 // Send a packet manually
 void LazymeshChannel::sendPacket(const uint8_t *packet, int size)
 {
+  LAZYMESH_DEBUG("Send packet");
   uint8_t *buf = (uint8_t *)malloc(size);
   memcpy(buf, packet, size);
 
@@ -453,12 +454,24 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
   int size = meta.size;
   uint8_t *packet = meta.packet;
 
+  const uint8_t *packetPointer = packet;
+
+  // Get the header which is 1+1+4+2+4=12 bytes
+  uint8_t header = packetPointer[HEADER_1_BYTE_OFFSET];
+
+  uint8_t packetType = header & PACKET_TYPE_BITMASK;
+
   LAZYMESH_DEBUG("***handlePacket***")
   LAZYMESH_DEBUG(size);
   if (size < PACKET_OVERHEAD)
   {
-    return false;
+    if (packetType != PACKET_TYPE_CONTROL)
+    {
+      LAZYMESH_DEBUG("Packet too small");
+      return false;
+    }
   }
+
   if (size > MAX_PACKET_SIZE)
   {
     LAZYMESH_DEBUG("Packet too big");
@@ -466,13 +479,6 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
   }
 
   LAZYMESH_DEBUG("Got packet");
-
-  const uint8_t *packetPointer = packet;
-
-  // Get the header which is 1+1+4+2+4=12 bytes
-  uint8_t header = packetPointer[HEADER_1_BYTE_OFFSET];
-
-  uint8_t packetType = header & PACKET_TYPE_BITMASK;
 
   LAZYMESH_DEBUG("Packet type");
   LAZYMESH_DEBUG(packetType);
