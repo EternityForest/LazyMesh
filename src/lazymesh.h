@@ -446,10 +446,9 @@ public:
     void enqueueAdvertisement(const uint8_t* data, size_t len);
 
 private:
+  unsigned long advTime = 0;
   BLEScan* pScan = nullptr;
  BLEExtAdvertisingCallbacks * callbacks = nullptr;
-   BLEAdvertising *pAdvertising =0;
-
    std::queue<std::vector<uint8_t>> rxQueue;
   std::mutex rxMutex;
  unsigned long lastRestartScan = 0;
