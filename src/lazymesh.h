@@ -33,10 +33,14 @@ typedef enum LazymeshTimeTrustLevel
 #define AUTH_TAG_BYTE_OFFSET 32
 #define CIPHERTEXT_BYTE_OFFSET 38
 
+// Gets you 4 bytes of randomness and 4 bytes of time
+// sorts by time, used as the ID in acknowledgements
+#define PACKET_ID_64_OFFSET (RANDOMNESS_BYTE_OFFSET + 4)
+
 // The offset that gets you 4 bytes of the group part
 // and 4 bytes of the channel specific part, as a weaker version
 // of the routing ID for internal use
-#define ROUTING_ID_64_OFFSET (RANDOMNESS_BYTE_OFFSET+8)
+#define ROUTING_ID_64_OFFSET (RANDOMNESS_BYTE_OFFSET + 8)
 #define ROUTING_ID_GROUP_PART_LEN 12
 
 // Header 1 bits
@@ -49,9 +53,9 @@ typedef enum LazymeshTimeTrustLevel
 
 // Header 2 bits
 #define HEADER_2_FIRST_SEND_ATTEMPT_BIT 0
-// This bit is set if the packet is repeated as opposed to
-// originating on the sending node
-#define HEADER_2_REPEATED_BIT 1
+// This bit is set if the node repeated the packet,
+// or would repeat it if it were not from local
+#define HEADER_2_REPEATER_BIT 1
 
 // Don't use the full 220, assume bluetooth and the like have their own limits
 #define MAX_PACKET_SIZE 220
@@ -62,9 +66,8 @@ typedef enum LazymeshTimeTrustLevel
 #define LAZYMESH_DEBUG(x) Serial.println(x);
 // #define LAZYMESH_DEBUG(x)
 
-
 #define CONTROL_PACKET_TYPE_OFFSET 2
-#define CONTROL_DATA_OFFSET 3
+#define CONTROL_PACKET_DATA_OFFSET 3
 // These messages do not expect
 #define PACKET_TYPE_CONTROL 0
 #define PACKET_TYPE_DATA 1
@@ -73,6 +76,10 @@ typedef enum LazymeshTimeTrustLevel
 // acknowledgement data part is the first 4 bytes of the randomness
 // in the packet
 #define CONTROL_TYPE_CHANNEL_ACKNOWLEDGE 1
+
+// Only used on transports that don't have loopback
+// otherwise we would just send the packet back
+#define CONTROL_TYPE_REPEATER_ACKNOWLEDGE 2
 
 #define DATA_ID_WANTED 1
 #define DATA_ID_TEXT_MESSAGE 32
@@ -97,14 +104,22 @@ public:
   LazymeshNeighborChannelInterest() {};
 };
 
+
+// class LazymeshSeenPacketReport
+// {
+//   uint8_t slowCopiesSeen = 0;
+//   uint8_t fastCopiesSeen = 0;
+// };
+
 // Placeholdre
-class LazymeshPacketMetadata{
-  public:
-  uint8_t * packet = nullptr;
+class LazymeshPacketMetadata
+{
+public:
+  uint8_t *packet = nullptr;
   uint8_t size = 0;
 
-  LazymeshTransport * transport = nullptr;
-  LazymeshChannel * localChannel = nullptr;
+  LazymeshTransport *transport = nullptr;
+  LazymeshChannel *localChannel = nullptr;
 };
 
 // This is a queued outgoing packet.
@@ -114,17 +129,17 @@ class LazymeshPacketMetadata{
 class LazymeshQueuedPacket
 {
 public:
-
   LazymeshTransport *source = nullptr;
 
   // If null, send on all transports
   // otherwise, send only on this transport
   LazymeshTransport *destination = nullptr;
 
-  // This is the first 4 bytes of the IV of the packet
-  // or of the packet we are ACKing.  
-  uint32_t packetID = 0;
+  int attemptsRemaining = 5;
 
+  int attemptsUsed = 0;
+
+  uint64_t packetID = 0;
 
   bool expectAck = false;
 
@@ -214,7 +229,7 @@ public:
 
   void computeTargetHash(bool force);
   void getTargetHashForTime(uint32_t unixTime, uint8_t *output);
-  bool handlePacket(LazymeshPacketMetadata & meta);
+  bool handlePacket(LazymeshPacketMetadata &meta);
 
   void setIntegerValue(uint32_t id, int32_t value);
   void setStringValue(uint32_t id, std::string value);
@@ -224,7 +239,6 @@ public:
   void sendPacket(const uint8_t *packet, int size);
   // Send a packet
   void sendPacket(JsonDocument &packet, bool reliable = false);
-
 
   // Override this is your custom class
   virtual void onReceivePacket(JsonDocument &decoded);
@@ -240,8 +254,13 @@ class LazymeshTransport
 {
 
 public:
+  std::string name = "";
   LazymeshNode *node = NULL;
   bool allowLoopbackRouting = false;
+  
+  // True if this is a slow transport
+  bool isSlow = false;
+
   LazymeshTransport();
   virtual ~LazymeshTransport();
 
@@ -265,14 +284,16 @@ private:
   std::vector<LazymeshTransport *> transports;
   std::vector<LazymeshChannel *> channels;
   // track how many repeater nodes have sent us the same packet
+  // or a repeater acknowledge for the same packet
   // because we may need this info to know how msny repeaters are
   // there.  That's why we have the first send attempt bit.
   // If val is 0, it means we saw it but none have been marked wth repeater flag
 
   // This has two purposes, to prevent replays and to understand how many repeaters
   // are in the area
-  std::map<uint64_t, int> seenPackets;
 
+  // index by 64 bit packet id
+  std::map<uint64_t, int> seenPackets;
 
   /*Packets we are waiting to send, or tracking the number of replies to*/
   std::vector<LazymeshQueuedPacket> queuedPackets;
@@ -294,8 +315,7 @@ private:
 
   // Return true if we have seen this packet,
   // Also mark it seen.
-  bool hasSeenPacket(const uint8_t *packet);
-
+  bool hasSeenPacket(const uint8_t *packet, LazymeshTransport *transport);
 
   // Send on the non-global routing transports.
   // Global routing is handled specially.
@@ -306,7 +326,7 @@ private:
 
   // Use a null for the source if it's local instead of a repeated packet
   // Use a null for destination to send on all transports
-  bool routePacketOutgoing(uint8_t *packet, int size, LazymeshTransport *transport,LazymeshTransport *destination);
+  bool routePacketOutgoing(uint8_t *packet, int size, LazymeshTransport *transport, LazymeshTransport *destination);
 
 public:
   int maxQueuedPackets = 12;
@@ -344,13 +364,8 @@ public:
     this->channels.clear();
   }
 
-  void doNeighborChannelInterest(const uint8_t *packet)
+  void doNeighborChannelInterest(uint64_t truncatedChannelHash)
   {
-    uint64_t truncatedChannelHash = 0;
-    // We want to get 4 bytes from the group key part, and 4 bytes from the psk part of the
-    // routing id, so that it will be unique if either the group key or the psk are different
-    memcpy(&truncatedChannelHash, packet + ROUTING_ID_64_OFFSET, 8);
-
     // Clear any with timestamp older than 70 minutes
     if (this->neighborChannelInterests.size() > 512)
     {
@@ -366,9 +381,13 @@ public:
       }
     }
 
-    if (this->neighborChannelInterests.size()<512)
+    if (this->neighborChannelInterests.size() < 512)
     {
-      this->neighborChannelInterests.emplace(truncatedChannelHash, LazymeshNeighborChannelInterest());
+      if (this->neighborChannelInterests.find(truncatedChannelHash) == this->neighborChannelInterests.end())
+      {
+        LAZYMESH_DEBUG("Neihbor channel interest registered")
+        this->neighborChannelInterests.emplace(truncatedChannelHash, LazymeshNeighborChannelInterest());
+      }
     }
 
     if (this->neighborChannelInterests.find(truncatedChannelHash) != this->neighborChannelInterests.end())
@@ -382,11 +401,11 @@ public:
       this->neighborChannelInterests[truncatedChannelHash].timestamp = millis();
     }
   }
-  
-  void sendAcknowledgementPacket(const uint8_t *packet, int size,  const LazymeshChannel *localChannel, LazymeshTransport *transport);
+
+  void sendAcknowledgementPacket(const uint8_t *packet, int size, const LazymeshChannel *localChannel, LazymeshTransport *transport);
 
   // Source is null and if it comes from local, channel can be null if it comes from someone else
-  void handlePacket(LazymeshPacketMetadata & meta);
+  void handlePacket(LazymeshPacketMetadata &meta);
   void handleDataPacket(const uint8_t *packet, int size, LazymeshTransport *source, LazymeshChannel *localChannel);
   void handleControlPacket(uint8_t type, const uint8_t *packet, int size, LazymeshTransport *transport);
 
@@ -435,24 +454,24 @@ uint8_t totalPathLoss(const uint8_t *packet);
 #include <BLEAdvertising.h>
 #include <BLEScan.h>
 
-class BLEExtendedAdvTransport : public LazymeshTransport {
+class BLEExtendedAdvTransport : public LazymeshTransport
+{
 public:
   BLEExtendedAdvTransport();
   ~BLEExtendedAdvTransport();
   void begin() override;
   void poll() override;
-  bool sendPacket(const uint8_t* data, int len) override;
+  bool sendPacket(const uint8_t *data, int len) override;
 
-    void enqueueAdvertisement(const uint8_t* data, size_t len);
+  void enqueueAdvertisement(const uint8_t *data, size_t len);
 
 private:
   unsigned long advTime = 0;
-  BLEScan* pScan = nullptr;
- BLEExtAdvertisingCallbacks * callbacks = nullptr;
-   std::queue<std::vector<uint8_t>> rxQueue;
+  BLEScan *pScan = nullptr;
+  BLEExtAdvertisingCallbacks *callbacks = nullptr;
+  std::queue<std::vector<uint8_t>> rxQueue;
   std::mutex rxMutex;
- unsigned long lastRestartScan = 0;
+  unsigned long lastRestartScan = 0;
   void setupBLE();
-  
 };
 #endif

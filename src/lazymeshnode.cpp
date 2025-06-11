@@ -33,14 +33,16 @@ void LazymeshNode::poll()
     for (std::vector<LazymeshQueuedPacket>::iterator it = this->queuedPackets.begin(); it != this->queuedPackets.end(); ++it)
     {
 
+        uint64_t packetId = 0;
         uint64_t truncatedRoutingId = 0;
+        memcpy(&packetId, (*it).packet.data() + PACKET_ID_64_OFFSET, 8);
         memcpy(&truncatedRoutingId, (*it).packet.data() + ROUTING_ID_64_OFFSET, 8);
 
         // Use the lower layer to count how many copies marked with the first flag we have seen
         int repeaterCopiesOfPacket = 0;
-        if (this->seenPackets.find(truncatedRoutingId) != this->seenPackets.end())
+        if (this->seenPackets.find(packetId) != this->seenPackets.end())
         {
-            repeaterCopiesOfPacket = this->seenPackets[truncatedRoutingId];
+            repeaterCopiesOfPacket = this->seenPackets[packetId];
         }
 
         // Handle packets that want an ack but have timed out.
@@ -49,10 +51,16 @@ void LazymeshNode::poll()
         if ((millis() - (*it).timestamp > 3000) && (*it).expectAck)
         {
             LAZYMESH_DEBUG("Finishing packet, reply stats:");
+            LAZYMESH_DEBUG("expectChannelAck:");
             LAZYMESH_DEBUG((*it).expectChannelAck);
+            LAZYMESH_DEBUG("expectRepeaterAck:");
             LAZYMESH_DEBUG((*it).expectRepeaterAck);
+            LAZYMESH_DEBUG("gotChannelAck:");
             LAZYMESH_DEBUG((*it).gotChannelAck);
+            LAZYMESH_DEBUG("gotRepeaterAck:");
             LAZYMESH_DEBUG(repeaterCopiesOfPacket);
+            LAZYMESH_DEBUG("Attempts:");
+            LAZYMESH_DEBUG((*it).attemptsUsed);
 
 #ifdef ESP32
             LAZYMESH_DEBUG("Free RAM:");
@@ -63,6 +71,7 @@ void LazymeshNode::poll()
             // based on how many acks we got
             if (this->neighborChannelInterests.find(truncatedRoutingId) != this->neighborChannelInterests.end())
             {
+                LAZYMESH_DEBUG("Found neighbor interest record, updating");
                 this->neighborChannelInterests[truncatedRoutingId].timestamp = millis();
                 if ((*it).gotChannelAck > this->neighborChannelInterests[truncatedRoutingId].interestLevel)
                 {
@@ -88,7 +97,7 @@ void LazymeshNode::poll()
                 this->repeaterListeners[meshRouteNumber] = this->repeaterListeners[meshRouteNumber] * 0.90 + repeaterCopiesOfPacket * 0.10;
             }
 
-            LAZYMESH_DEBUG("Other repeaters on this route:");
+            LAZYMESH_DEBUG("Total repeaters on this route:");
             LAZYMESH_DEBUG(this->repeaterListeners[meshRouteNumber]);
             // erase old packets
             this->queuedPackets.erase(it);
@@ -98,12 +107,11 @@ void LazymeshNode::poll()
 
         // If it's an unfinished reliable packet, or a fire and forget packet, try to send it
         // Also if no acks are expected just send once
-        if ((*it).expectChannelAck > ((*it).gotChannelAck) || (*it).expectRepeaterAck > repeaterCopiesOfPacket || !(*it).expectAck || ((*it).expectChannelAck == 0 && (*it).expectRepeaterAck == 0))
+        if ((*it).expectChannelAck > ((*it).gotChannelAck) || (*it).expectRepeaterAck > repeaterCopiesOfPacket || !(*it).expectAck || (*it).attemptsUsed == 0)
         {
             if (millis() - (*it).lastSendAttempt > 500 || (*it).lastSendAttempt == 0)
             {
-                LAZYMESH_DEBUG("Routing outgoing packet");
-                LAZYMESH_DEBUG((*it).packet.size());
+
                 int packetType = (*it).packet.data()[HEADER_1_BYTE_OFFSET] & PACKET_TYPE_BITMASK;
 
                 bool shouldSkip = false;
@@ -113,6 +121,7 @@ void LazymeshNode::poll()
                 {
                     if ((*it).gotChannelAck > 8)
                     {
+                        LAZYMESH_DEBUG("Too many channel acks");
                         shouldSkip = true;
                     }
                 }
@@ -121,7 +130,15 @@ void LazymeshNode::poll()
 
                 if (!shouldSkip)
                 {
-                    sent = this->routePacketOutgoing((*it).packet.data(), (*it).packet.size(), (*it).source, (*it).destination);
+                    if ((*it).attemptsRemaining > 0)
+                    {
+                        LAZYMESH_DEBUG("Attempting to send packet with remaining attempts:");
+                        LAZYMESH_DEBUG((*it).attemptsRemaining);
+                        (*it).attemptsRemaining--;
+                        (*it).attemptsUsed++;
+
+                        sent = this->routePacketOutgoing((*it).packet.data(), (*it).packet.size(), (*it).source, (*it).destination);
+                    }
                 }
                 else
                 {
@@ -135,8 +152,7 @@ void LazymeshNode::poll()
                 // and make the reciever think there were more listeners.
                 if (sent || packetType == PACKET_TYPE_CONTROL)
                 {
-                    // If no ack is needed, as soon as we send it,
-                    if (!(*it).expectAck || (((*it).expectChannelAck == 0 && (*it).expectRepeaterAck == 0)) )
+                    if (!(*it).expectAck)
                     {
                         LAZYMESH_DEBUG("Finishing packet with no reply expected");
                         this->queuedPackets.erase(it);
@@ -211,7 +227,7 @@ unsigned long LazymeshNode::getUnixTime()
     return unix_time_at_millis + (millis() - millis_timestamp) / 1000;
 }
 
-bool LazymeshNode::hasSeenPacket(const uint8_t *packet)
+bool LazymeshNode::hasSeenPacket(const uint8_t *packet,LazymeshTransport *transport)
 {
     // Maintain a list of the last 1024 packets.  This should use about 20kb of RAM
     // We make sure the packet IDs have the timestamp so we can sort oldest to newest
@@ -222,9 +238,12 @@ bool LazymeshNode::hasSeenPacket(const uint8_t *packet)
 
     uint64_t packetid = 0;
 
+    LAZYMESH_DEBUG("Checking seen packet records");
+
     // Now we are at the crypto ID, skip 4 so we get 4 random bytes then the high order
     // part is the timestamp, giving us a 64 bit ordered ID
-    memcpy(&packetid, packet + RANDOMNESS_BYTE_OFFSET + 4, 8);
+    memcpy(&packetid, packet + PACKET_ID_64_OFFSET, 8);
+    LAZYMESH_DEBUG(packetid);
 
     uint32_t oldest_timestamp = (this->seenPackets.begin()->first) >> 32;
     uint32_t incoming_timestamp = packetid >> 32;
@@ -244,16 +263,19 @@ bool LazymeshNode::hasSeenPacket(const uint8_t *packet)
     bool seen = seenPackets.find(packetid) != seenPackets.end();
     if (!seen)
     {
+        LAZYMESH_DEBUG("Seen packet for the first time");
         seenPackets[packetid] = 0;
     }
-    else
-    {
-        // Don't increment on resends
-        if (packet[HEADER_2_BYTE_OFFSET] & (1 >> HEADER_2_FIRST_SEND_ATTEMPT_BIT))
-        {
 
-            if (packet[HEADER_2_BYTE_OFFSET] & (1 >> HEADER_2_REPEATED_BIT))
-            {
+    // Don't increment on resends, or non-repeated packets
+    if (packet[HEADER_2_BYTE_OFFSET] & (1 << HEADER_2_FIRST_SEND_ATTEMPT_BIT))
+    {
+        LAZYMESH_DEBUG("was first send attempt");
+        if (packet[HEADER_2_BYTE_OFFSET] & (1 << HEADER_2_REPEATER_BIT))
+        {
+            // Don't count ourselves as a repeater
+            if(transport){
+                LAZYMESH_DEBUG("Including in repeater count")
                 seenPackets[packetid] += 1;
             }
         }
@@ -264,22 +286,54 @@ bool LazymeshNode::hasSeenPacket(const uint8_t *packet)
 
 void LazymeshNode::handleControlPacket(uint8_t type, const uint8_t *packet, int size, LazymeshTransport *transport = NULL)
 {
+
+    LAZYMESH_DEBUG("Handling control packet");
+    LAZYMESH_DEBUG(type);
     if (type == CONTROL_TYPE_CHANNEL_ACKNOWLEDGE)
     {
-        uint32_t packetID = 0;
-        memcpy(&packetID, packet + RANDOMNESS_BYTE_OFFSET, 4);
+        uint64_t packetID = 0;
+        memcpy(&packetID, packet, 8);
+
+        LAZYMESH_DEBUG("Got channel ack");
+        LAZYMESH_DEBUG(packetID);
 
         for (std::vector<LazymeshQueuedPacket>::iterator it = this->queuedPackets.begin(); it != this->queuedPackets.end(); ++it)
         {
+            LAZYMESH_DEBUG("Checking queued packet");
+            LAZYMESH_DEBUG((*it).packetID);
             // Only track ACKs on the same transport which this was supposed to be aimed at
             if ((*it).packetID == packetID && ((*it).destination == transport || (*it).destination == NULL))
             {
-                LAZYMESH_DEBUG("Channel ack incremented to");
-                // Mark this as a packet people in the immediate area care about.
-                this->doNeighborChannelInterest(packet);
-                (*it).gotChannelAck += 1;
-                LAZYMESH_DEBUG((*it).gotChannelAck);
+                if ((*it).packet.size() > PACKET_OVERHEAD)
+                {
+                    uint64_t truncatedRoutingId = 0;
+                    memcpy(&truncatedRoutingId, (*it).packet.data(), 8);
+
+                    // Mark this as a packet people in the immediate area care about.
+                    this->doNeighborChannelInterest(truncatedRoutingId);
+                    (*it).gotChannelAck += 1;
+
+                    LAZYMESH_DEBUG("Channel ack incremented to");
+                    LAZYMESH_DEBUG((*it).gotChannelAck);
+                }
             }
+        }
+    }
+
+    if (type == CONTROL_TYPE_REPEATER_ACKNOWLEDGE)
+    {
+        uint64_t packetID = 0;
+        memcpy(&packetID, packet, 8);
+
+        LAZYMESH_DEBUG("Got repeater ack");
+        LAZYMESH_DEBUG(packetID);
+        // Look in the seenPackets
+        // Count this like as if we saw it. Assume we will always see the packet before it's
+        // ack
+        if (this->seenPackets.find(packetID) != this->seenPackets.end())
+        {
+            LAZYMESH_DEBUG("Incrementing repeater packet count");
+            this->seenPackets[packetID] += 1;
         }
     }
 }
@@ -295,25 +349,38 @@ void LazymeshNode::sendAcknowledgementPacket(const uint8_t *packet, int size, co
     LAZYMESH_DEBUG("Sending ack");
     uint8_t buffer[16];
     buffer[HEADER_1_BYTE_OFFSET] = PACKET_TYPE_CONTROL;
+
+    // 0 hops is local node only
+    buffer[HEADER_1_BYTE_OFFSET] |= (1 << 2);
+
     buffer[HEADER_2_BYTE_OFFSET] = 0;
     buffer[HEADER_2_BYTE_OFFSET] |= 1 << HEADER_2_FIRST_SEND_ATTEMPT_BIT;
 
     if (localChannel)
     {
+        LAZYMESH_DEBUG("Sending channel ack");
         buffer[CONTROL_PACKET_TYPE_OFFSET] = CONTROL_TYPE_CHANNEL_ACKNOWLEDGE;
     }
     else
     {
-        LAZYMESH_DEBUG("Not interested so not sending ack");
-        return;
+        LAZYMESH_DEBUG("Sending repeater ack");
+        buffer[CONTROL_PACKET_TYPE_OFFSET] = CONTROL_TYPE_REPEATER_ACKNOWLEDGE;
     }
-    memcpy(buffer + 3, packet + RANDOMNESS_BYTE_OFFSET, 4);
+
+    uint64_t packetID = 0;
+    memcpy(&packetID, packet + PACKET_ID_64_OFFSET, 8);
+    memcpy(buffer + CONTROL_PACKET_DATA_OFFSET, packet + PACKET_ID_64_OFFSET, 8);
+    LAZYMESH_DEBUG(packetID);
 
     // Expect no response to an ack
     if (this->queuedPackets.size() < this->maxQueuedPackets)
     {
-        this->queuedPackets.emplace_back(buffer, 6, 0, 0);
+        this->queuedPackets.emplace_back(buffer, 2 + 1 + 8, 0, 0);
         this->queuedPackets.back().destination = transport;
+    }
+    else
+    {
+        LAZYMESH_DEBUG("Too many queued packets, dropping outgoing ACK");
     }
 }
 
@@ -329,17 +396,31 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
     uint8_t packet[256];
     memcpy(packet, incomingPacket, size);
 
-    // This also marks sent
-    if (this->hasSeenPacket(packet))
-    {
-        LAZYMESH_DEBUG("Duplicate packet");
-        return;
-    }
+    uint8_t packetType = packet[HEADER_1_BYTE_OFFSET] & PACKET_TYPE_BITMASK;
 
     // If we are configured to route for this meshRouteNumber, route it flood style out everything.
     // Also always route our own packets
     uint8_t meshRouteNumber = packet[MESH_ROUTE_NUMBER_BYTE_OFFSET];
 
+
+
+    // This also marks sent and processes repeater counting
+    if (this->hasSeenPacket(packet, source))
+    {
+        LAZYMESH_DEBUG("Duplicate packet");
+        return;
+    }    
+    
+    // Mark it as repeated or repeatable or generally to be included in repeater counts.
+    if (source || this->isRouteEnabled(meshRouteNumber) || this->isRouteEnabled(0))
+    {
+        packet[HEADER_2_BYTE_OFFSET] |= 1 << HEADER_2_REPEATER_BIT;
+    }
+    else{
+        packet[HEADER_2_BYTE_OFFSET] &= ~(1 << HEADER_2_REPEATER_BIT);
+    }
+
+    bool localHandled = false;
     // Don't try to decode our own keepalives and spam logs in the process
     if (size > PACKET_OVERHEAD || source)
     {
@@ -356,9 +437,12 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
 
                 if ((*it)->handlePacket(meta))
                 {
-                    this->sendAcknowledgementPacket(packet, size, localChannel, source);
-                    // Just in case we have two copies
-                    break;
+
+                    if ((!localHandled) && packetType == PACKET_TYPE_DATA_RELIABLE)
+                    {
+                        this->sendAcknowledgementPacket(packet, size, (*it), source);
+                    }
+                    localHandled = true;
                 }
             }
         }
@@ -372,6 +456,12 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
         bool globalRoute = false;
         if (this->isRouteEnabled(meshRouteNumber) || this->isRouteEnabled(0) || source == NULL)
         {
+            // Non-loopback transports use repeater ACKs to count the repeats
+            if (source && (!source->allowLoopbackRouting) && packetType == PACKET_TYPE_DATA_RELIABLE)
+            {
+                this->sendAcknowledgementPacket(packet, size, nullptr, source);
+            }
+
             LAZYMESH_DEBUG("Packet can be routed");
             // Assume that every node is only part of one global routing
             // And that there is no reason for any node to post
@@ -410,21 +500,19 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
             {
                 LAZYMESH_DEBUG("Queueing packet");
 
-                // Mark it as repeated
-                if (source)
-                {
-                    packet[HEADER_2_BYTE_OFFSET] |= 1 << HEADER_2_REPEATED_BIT;
-                }
-
                 int channelListeners = 0;
-                if (localChannel)
+                if (packetType == PACKET_TYPE_DATA_RELIABLE)
                 {
-                    // Round up but bias towards the higher value.
-                    channelListeners = (localChannel->listeners + 0.8);
+
+                    if (this->neighborChannelInterests.find(meshRouteNumber) != this->neighborChannelInterests.end())
+                    {
+                        channelListeners = (this->neighborChannelInterests[meshRouteNumber].interestLevel+0.5);
+                    }
                 }
                 LAZYMESH_DEBUG("Queuing outgoing packet");
                 uint8_t route_id = packet[MESH_ROUTE_NUMBER_BYTE_OFFSET];
-                this->queuedPackets.emplace_back(packet, size, channelListeners, this->repeaterListeners[route_id] + 0.8);
+
+                this->queuedPackets.emplace_back(packet, size, channelListeners, this->repeaterListeners[route_id] + 0.5);
                 this->queuedPackets.back().source = source;
 
                 // packet itself is an implicit ack from the sender, so we count it
@@ -448,7 +536,7 @@ void LazymeshNode::handlePacket(LazymeshPacketMetadata &meta)
     int size = meta.size;
     LazymeshChannel *localChannel = meta.localChannel;
     LazymeshTransport *source = meta.transport;
-    
+
     if (size > MAX_PACKET_SIZE)
     {
         LAZYMESH_DEBUG("Too big");
@@ -462,16 +550,21 @@ void LazymeshNode::handlePacket(LazymeshPacketMetadata &meta)
 
     uint8_t packetType = incomingPacket[HEADER_1_BYTE_OFFSET] & 0b11;
 
-
     if (packetType == PACKET_TYPE_CONTROL)
     {
-        handleControlPacket(incomingPacket[CONTROL_PACKET_TYPE_OFFSET], incomingPacket + CONTROL_PACKET_TYPE_OFFSET, size - 3, source);
+        if(!source){
+            LAZYMESH_DEBUG("Not handling our own control packet");
+        }
+        else{
+            handleControlPacket(incomingPacket[CONTROL_PACKET_TYPE_OFFSET], incomingPacket + CONTROL_PACKET_DATA_OFFSET, size - 3, source);
+        }
         return;
     }
     // This also does the routing, control packets don't get hop routed
     else if (packetType == PACKET_TYPE_DATA || packetType == PACKET_TYPE_DATA_RELIABLE)
     {
-        if(size<PACKET_OVERHEAD){
+        if (size < PACKET_OVERHEAD)
+        {
             LAZYMESH_DEBUG("Too small to be a data packet");
             return;
         }
@@ -482,12 +575,26 @@ void LazymeshNode::handlePacket(LazymeshPacketMetadata &meta)
 bool LazymeshNode::routePacketOutgoing(uint8_t *packet, int size, LazymeshTransport *source, LazymeshTransport *destination)
 {
     LAZYMESH_DEBUG("Attempting to route packet");
+    bool allowSlowRoute = packet[HEADER_1_BYTE_OFFSET] & (1 << SLOW_TRANSPORT_OFFSET);
+
+    bool success = true;
     for (std::vector<LazymeshTransport *>::iterator it = this->transports.begin(); it != this->transports.end(); ++it)
     {
+        LAZYMESH_DEBUG("Trying transport");
+        LAZYMESH_DEBUG((*it)->name.c_str());
+
+        // Packets can be marked as fast only
+        if ((*it)->isSlow && !allowSlowRoute)
+        {
+            LAZYMESH_DEBUG("Skipping on this transport, slow route disabled");
+            continue;
+        }
+
         if ((*it) == source)
         {
             if (!(*it)->allowLoopbackRouting)
             {
+                LAZYMESH_DEBUG("Skipping on this transport, loopback disabled");
                 continue;
             }
         }
@@ -496,17 +603,19 @@ bool LazymeshNode::routePacketOutgoing(uint8_t *packet, int size, LazymeshTransp
         {
             if ((*it) != destination)
             {
+                LAZYMESH_DEBUG("Skipping on this transport, not the destination");
                 continue;
             }
         }
 
         if (!((*it)->sendPacket(packet, size)))
         {
-            return false;
+            LAZYMESH_DEBUG("Failed to route packet on this transport");
+            success = false;
         }
     }
 
     // Clear the first send attempt bit
-    packet[HEADER_2_BYTE_OFFSET] ^= ~(1 << HEADER_2_FIRST_SEND_ATTEMPT_BIT);
-    return true;
+    packet[HEADER_2_BYTE_OFFSET] &= ~(1 << HEADER_2_FIRST_SEND_ATTEMPT_BIT);
+    return success;
 }

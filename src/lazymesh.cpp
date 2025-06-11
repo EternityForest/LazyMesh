@@ -31,13 +31,35 @@ LazymeshQueuedPacket::LazymeshQueuedPacket(uint8_t *newpacket, int len, int expe
 
   memcpy(this->packet.data(), newpacket, len);
 
-  memcpy(&this->packetID, newpacket, 4);
+  // Shorter packers don't have the routing ID
+  if(len >= PACKET_OVERHEAD){
+      memcpy(&this->packetID, newpacket + PACKET_ID_64_OFFSET, 8);
+  }
 
   // Mark it as first send attemp from this node
   this->packet[HEADER_2_BYTE_OFFSET] |= (1 << HEADER_2_FIRST_SEND_ATTEMPT_BIT);
 
+
   this->expectAck = (packet[0] & 3) == PACKET_TYPE_DATA_RELIABLE;
   this->timestamp = millis();
+
+  this->attemptsRemaining = 6;
+
+  // Nobody is listening, don't resend a bunch
+  if(expectChannelListeners == 0 && expectRepeaterListeners == 0){
+    this->attemptsRemaining = 2;
+  }
+
+  if(!this->expectAck){
+    this->attemptsRemaining = 1;
+  }
+
+  LAZYMESH_DEBUG("Queued packet");
+  LAZYMESH_DEBUG(packetID);
+  LAZYMESH_DEBUG(expectAck);
+  LAZYMESH_DEBUG(attemptsRemaining);
+  LAZYMESH_DEBUG(expectChannelAck);
+  LAZYMESH_DEBUG(expectRepeaterAck);
 }
 
 LazymeshQueuedPacket::~LazymeshQueuedPacket()
@@ -660,6 +682,8 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
     this->meshNode->setTime(unixTime, LAZYMESH_TIME_TRUST_LEVEL_TRUSTED);
   }
 
+  LAZYMESH_DEBUG("Packet decode result");
+  LAZYMESH_DEBUG(trusted);
   return trusted;
 }
 void LazymeshChannel::poll()

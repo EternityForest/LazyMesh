@@ -107,7 +107,11 @@ All numbers are little-endian.
         clear it.  This way, as long as we assume packet loss is low-ish, we can count the repeaters in the area
         without extra overhead.
 
-    7 reserved 0 bits
+    1 bit repeater bit:
+        Marks that this packet should be included when counting repeaters.
+        Set it if you would repeat the packet or one like it, even if you originated it.
+
+    6 reserved 0 bits
 
 
 
@@ -212,3 +216,9 @@ Evey hour, a few minutes before the hour, nodes should send an announce of the c
 
 This should be sent with the rolling codes for the *next* hour rather than the current hour, so that connections
 can be set up in advance and everything works even when times are out of sync.
+
+## Bluetooth
+
+Nodes mesh via bluetooth using an extended advertising packet with service UUID
+d1a77e11-420f-9f11-1a00-10a6beef0001, and the payload just being the packet format above.
+
