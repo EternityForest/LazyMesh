@@ -201,7 +201,7 @@ void LazymeshNode::setTime(unsigned long unix_time, LazymeshTimeTrustLevel trust
     // Allow 1 second per day adjustment from trusted but not local time
     else if ((trust_level == LAZYMESH_TIME_TRUST_LEVEL_TRUSTED))
     {
-        if (millis() - this->millis_timestamp > 86400000)
+        if (millis() - this->millis_timestamp > 21600000)
         {
             unsigned long t = this->getUnixTime();
             if (t > unix_time)
