@@ -75,14 +75,16 @@ void setup() {
   blet.begin();
   // timeClient.begin();
 
-  // // If this fails we cannot do anything, the protocol has a hard requirement that the time is known
-  // // The time can be +- 90 seconds, so manual sync or bluetooth works just fine.
-  // // Also, once initially set, nodes will adjust their time to stay in sync.
-  // if (timeClient.update()) {
-  //   node.setTime(timeClient.getEpochTime(), LAZYMESH_TIME_TRUST_LEVEL_LOCAL);
-  // }
+  // If this fails we cannot do anything, the protocol has a hard requirement that the time is known
+  // The time can be +- 90 seconds, so manual sync or bluetooth works just fine.
+  // Also, once initially set, nodes will adjust their time to stay in sync.
+  if (timeClient.update()) {
+    node.setTime(timeClient.getEpochTime(), LAZYMESH_TIME_TRUST_LEVEL_LOCAL);
+  }
 
-  node.setTime(5,LAZYMESH_TIME_TRUST_LEVEL_LOCAL);
+  // Could just set fixed time and start nodes at same time too
+  // for testing
+  // node.setTime(5,LAZYMESH_TIME_TRUST_LEVEL_LOCAL);
 
 
   // We can have 2 of the same channel on the same node, and they talk to each other
