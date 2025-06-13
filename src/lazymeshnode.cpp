@@ -42,7 +42,7 @@ void LazymeshNode::poll()
         int repeaterCopiesOfPacket = 0;
         if (this->seenPackets.find(packetId) != this->seenPackets.end())
         {
-            repeaterCopiesOfPacket = this->seenPackets[packetId];
+            repeaterCopiesOfPacket = this->seenPackets[packetId].uniqueRepeatersSeen;
         }
 
         // Handle packets that want an ack but have timed out.
@@ -137,6 +137,14 @@ void LazymeshNode::poll()
                         (*it).attemptsRemaining--;
                         (*it).attemptsUsed++;
 
+                        // If any transport fails, don't count it against our max resends.
+                        // assume it's rare enough that we can just retry everything.
+
+                        // Lora is the one that will likely cause most of the delays, and Lora
+                        // is the only one that's really bandwidth limited.
+
+                        // Ble will potentially jam up a lot too so using both together could be trouble.
+                        // but if you're doing lots of packets on LoRa there's already trouble.
                         sent = this->routePacketOutgoing((*it).packet.data(), (*it).packet.size(), (*it).source, (*it).destination);
                     }
                 }
@@ -227,7 +235,7 @@ unsigned long LazymeshNode::getUnixTime()
     return unix_time_at_millis + (millis() - millis_timestamp) / 1000;
 }
 
-bool LazymeshNode::hasSeenPacket(const uint8_t *packet,LazymeshTransport *transport)
+bool LazymeshNode::hasSeenPacket(const uint8_t *packet, LazymeshTransport *transport)
 {
     // Maintain a list of the last 1024 packets.  This should use about 20kb of RAM
     // We make sure the packet IDs have the timestamp so we can sort oldest to newest
@@ -264,7 +272,7 @@ bool LazymeshNode::hasSeenPacket(const uint8_t *packet,LazymeshTransport *transp
     if (!seen)
     {
         LAZYMESH_DEBUG("Seen packet for the first time");
-        seenPackets[packetid] = 0;
+        seenPackets.emplace(packetid, LazymeshSeenPacketReport());
     }
 
     // Don't increment on resends, or non-repeated packets
@@ -274,12 +282,17 @@ bool LazymeshNode::hasSeenPacket(const uint8_t *packet,LazymeshTransport *transp
         if (packet[HEADER_2_BYTE_OFFSET] & (1 << HEADER_2_REPEATER_BIT))
         {
             // Don't count ourselves as a repeater
-            if(transport){
+            // don't count repeaters on transports that don't enable
+            // reliable repeater connections
+            if (transport && transport->enableAutoResend)
+            {
                 LAZYMESH_DEBUG("Including in repeater count")
-                seenPackets[packetid] += 1;
+                seenPackets[packetid].uniqueRepeatersSeen += 1;
             }
         }
     }
+
+    seenPackets[packetid].totalSeen += 1;
 
     return seen;
 };
@@ -333,7 +346,7 @@ void LazymeshNode::handleControlPacket(uint8_t type, const uint8_t *packet, int 
         if (this->seenPackets.find(packetID) != this->seenPackets.end())
         {
             LAZYMESH_DEBUG("Incrementing repeater packet count");
-            this->seenPackets[packetID] += 1;
+            this->seenPackets[packetID].uniqueRepeatersSeen += 1;
         }
     }
 }
@@ -343,6 +356,12 @@ void LazymeshNode::sendAcknowledgementPacket(const uint8_t *packet, int size, co
     if (!transport)
     {
         LAZYMESH_DEBUG("Transport is null, not sending ack to local");
+        return;
+    }
+
+    if (!transport->enableAutoResend)
+    {
+        LAZYMESH_DEBUG("Transport does not support acks");
         return;
     }
 
@@ -363,7 +382,8 @@ void LazymeshNode::sendAcknowledgementPacket(const uint8_t *packet, int size, co
     }
     else
     {
-        LAZYMESH_DEBUG("Sending repeater ack");
+
+        LAZYMESH_DEBUG("Sending repeater ack"); //
         buffer[CONTROL_PACKET_TYPE_OFFSET] = CONTROL_TYPE_REPEATER_ACKNOWLEDGE;
     }
 
@@ -402,21 +422,20 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
     // Also always route our own packets
     uint8_t meshRouteNumber = packet[MESH_ROUTE_NUMBER_BYTE_OFFSET];
 
-
-
     // This also marks sent and processes repeater counting
     if (this->hasSeenPacket(packet, source))
     {
         LAZYMESH_DEBUG("Duplicate packet");
         return;
-    }    
-    
+    }
+
     // Mark it as repeated or repeatable or generally to be included in repeater counts.
-    if (source || this->isRouteEnabled(meshRouteNumber) || this->isRouteEnabled(0))
+    if (source || this->isRouteEnabled(meshRouteNumber))
     {
         packet[HEADER_2_BYTE_OFFSET] |= 1 << HEADER_2_REPEATER_BIT;
     }
-    else{
+    else
+    {
         packet[HEADER_2_BYTE_OFFSET] &= ~(1 << HEADER_2_REPEATER_BIT);
     }
 
@@ -454,7 +473,7 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
         decrementTTLInPlace(packet);
 
         bool globalRoute = false;
-        if (this->isRouteEnabled(meshRouteNumber) || this->isRouteEnabled(0) || source == NULL)
+        if (this->isRouteEnabled(meshRouteNumber) || source == NULL)
         {
             // Non-loopback transports use repeater ACKs to count the repeats
             if (source && (!source->allowLoopbackRouting) && packetType == PACKET_TYPE_DATA_RELIABLE)
@@ -506,7 +525,7 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
 
                     if (this->neighborChannelInterests.find(meshRouteNumber) != this->neighborChannelInterests.end())
                     {
-                        channelListeners = (this->neighborChannelInterests[meshRouteNumber].interestLevel+0.5);
+                        channelListeners = (this->neighborChannelInterests[meshRouteNumber].interestLevel + 0.5);
                     }
                 }
                 LAZYMESH_DEBUG("Queuing outgoing packet");
@@ -552,10 +571,12 @@ void LazymeshNode::handlePacket(LazymeshPacketMetadata &meta)
 
     if (packetType == PACKET_TYPE_CONTROL)
     {
-        if(!source){
+        if (!source)
+        {
             LAZYMESH_DEBUG("Not handling our own control packet");
         }
-        else{
+        else
+        {
             handleControlPacket(incomingPacket[CONTROL_PACKET_TYPE_OFFSET], incomingPacket + CONTROL_PACKET_DATA_OFFSET, size - 3, source);
         }
         return;

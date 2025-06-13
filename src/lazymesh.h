@@ -63,8 +63,8 @@ typedef enum LazymeshTimeTrustLevel
 // Header, header, meshRouteNumber, path loss, 8 bytes randomness for nonce, 4 byte time, auth tag
 #define PACKET_OVERHEAD (1 + 1 + 1 + 1 + 8 + 4 + ROUTING_ID_LEN + AUTH_TAG_LEN)
 
-#define LAZYMESH_DEBUG(x) Serial.println(x);
-// #define LAZYMESH_DEBUG(x)
+//#define LAZYMESH_DEBUG(x) Serial.println(x);
+#define LAZYMESH_DEBUG(x)
 
 #define CONTROL_PACKET_TYPE_OFFSET 2
 #define CONTROL_PACKET_DATA_OFFSET 3
@@ -105,11 +105,12 @@ public:
 };
 
 
-// class LazymeshSeenPacketReport
-// {
-//   uint8_t slowCopiesSeen = 0;
-//   uint8_t fastCopiesSeen = 0;
-// };
+class LazymeshSeenPacketReport
+{
+  public:
+  uint8_t totalSeen = 0;
+  uint8_t uniqueRepeatersSeen = 0;
+};
 
 // Placeholdre
 class LazymeshPacketMetadata
@@ -183,6 +184,9 @@ private:
   std::map<uint32_t, int32_t> state;
   std::map<uint32_t, std::string> stringState;
 
+
+
+
 public:
   // It's a float because we do some peak detect averaging.
   float listeners = 0;
@@ -214,6 +218,8 @@ public:
 
   // This tracks what data we can send on request
   std::set<uint32_t> canSend;
+
+
 
   void poll();
 
@@ -257,7 +263,17 @@ public:
   std::string name = "";
   LazymeshNode *node = NULL;
   bool allowLoopbackRouting = false;
+
+
+  // Is the transport fast enough that we don't need
+  // to be concerned with a packet or two per second of bandwidth?
+  bool fast = false;
   
+  // If true, count the othe repeaters on the network
+  // and resend until they all get it.
+  bool enableAutoResend = true;
+
+
   // True if this is a slow transport
   bool isSlow = false;
 
@@ -281,19 +297,27 @@ class LazymeshNode
 {
 
 private:
+
+  // Sorted by descending speed, because we may want to try them in order
+  // we don't want a failed send on a fast one to cause a resend on a slow one
   std::vector<LazymeshTransport *> transports;
+
   std::vector<LazymeshChannel *> channels;
   // track how many repeater nodes have sent us the same packet
   // or a repeater acknowledge for the same packet
   // because we may need this info to know how msny repeaters are
   // there.  That's why we have the first send attempt bit.
-  // If val is 0, it means we saw it but none have been marked wth repeater flag
+  // If val is 0, it means we saw it but it wasn't a first send attempt or it was from
+  // us.
+
+  // Also we don't count packets from certain transports marked with the
+  // unreliable repeaters flag because their packet loss is just too high.
 
   // This has two purposes, to prevent replays and to understand how many repeaters
   // are in the area
 
   // index by 64 bit packet id
-  std::map<uint64_t, int> seenPackets;
+  std::map<uint64_t, LazymeshSeenPacketReport> seenPackets;
 
   /*Packets we are waiting to send, or tracking the number of replies to*/
   std::vector<LazymeshQueuedPacket> queuedPackets;
@@ -349,7 +373,14 @@ public:
 
   void addTransport(LazymeshTransport *t)
   {
-    this->transports.push_back(t);
+    // If it is a fast transport it must go near the front of the list,
+    // so that if it fails, it will not cause the slow transports to have to send again
+    if(t->fast){
+      this->transports.insert(this->transports.begin(), t);
+    }
+    else{
+      this->transports.push_back(t);
+    }
     t->node = this;
   }
 
@@ -467,6 +498,14 @@ public:
 
 private:
   unsigned long advTime = 0;
+
+
+  // The current packet we are repeatedly sending
+  uint64_t outgoingPacketID = 0;
+  // How many incoming copies of it we've seen,
+  // just stop if we see way too many of them.
+  int outgoingpacketseencount = 0;
+
   BLEScan *pScan = nullptr;
   BLEExtAdvertisingCallbacks *callbacks = nullptr;
   std::queue<std::vector<uint8_t>> rxQueue;

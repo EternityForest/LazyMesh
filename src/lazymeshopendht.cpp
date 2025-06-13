@@ -200,6 +200,8 @@ const uint8_t *LazymeshOpenDHTListener::poll() {
 }
 
 LazymeshOpenDHTTransport::LazymeshOpenDHTTransport() {
+  // This doesn't need to be involved in repeaters
+  this->enableAutoResend = false;
 }
 
 

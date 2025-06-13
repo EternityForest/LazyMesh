@@ -33,8 +33,9 @@ MyChannel channel;
 
 // Lazymesh uses pluggable transports, so it can run over multiple different protocols.
 // Here we use UDP and OpenDHT.
-LazymeshUDPTransport transport;
-LazymeshOpenDHTTransport dht;
+// LazymeshUDPTransport transport;
+// LazymeshOpenDHTTransport dht;
+BLEExtendedAdvTransport blet;
 
 std::string buf = "";
 
@@ -52,8 +53,9 @@ void setup() {
 
   node.addChannel(&channel);
 
-  node.addTransport(&transport);
-  node.addTransport(&dht);
+  //node.addTransport(&transport);
+  //node.addTransport(&dht);
+  node.addTransport(&blet);
 
 
   WiFi.begin("WifiName", "Password");
@@ -66,19 +68,21 @@ void setup() {
   Serial.println("Local IP:");
   Serial.println(WiFi.localIP());
 
+
   // Begin once the internet is set up
-  transport.begin();
-  dht.begin();
+  // transport.begin();
+  // dht.begin();
+  blet.begin();
+  // timeClient.begin();
 
+  // // If this fails we cannot do anything, the protocol has a hard requirement that the time is known
+  // // The time can be +- 90 seconds, so manual sync or bluetooth works just fine.
+  // // Also, once initially set, nodes will adjust their time to stay in sync.
+  // if (timeClient.update()) {
+  //   node.setTime(timeClient.getEpochTime(), LAZYMESH_TIME_TRUST_LEVEL_LOCAL);
+  // }
 
-  timeClient.begin();
-
-  // If this fails we cannot do anything, the protocol has a hard requirement that the time is known
-  // The time can be +- 90 seconds, so manual sync or bluetooth works just fine.
-  // Also, once initially set, nodes will adjust their time to stay in sync.
-  if (timeClient.update()) {
-    node.setTime(timeClient.getEpochTime(), LAZYMESH_TIME_TRUST_LEVEL_LOCAL);
-  }
+  node.setTime(5,LAZYMESH_TIME_TRUST_LEVEL_LOCAL);
 
 
   // We can have 2 of the same channel on the same node, and they talk to each other
@@ -105,7 +109,7 @@ void loop() {
       buf = "";
       Serial.println("Sending...");
 
-      channel.sendPacket(doc);
+      channel.sendPacket(doc, true);
     } else {
       if (buf.size() < 120) {
         buf.push_back(c);

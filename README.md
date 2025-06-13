@@ -59,6 +59,9 @@ route number.  By default, everything is sent with route number 0, which is enab
 
 This only affects repeaters, nodes will listen to any mesh route numberif it is directly for them.
 
+
+
+
 ## Transports
 
 ### OpenDHT Routing
@@ -172,26 +175,23 @@ N bytes ciphertext:
 
 Some implementations may choose to entirely ignore this.
 
-Ack packets are not repeated or routed or anything, nor are they authenticated.  Every step of mesh repeating
-has it's own acknowlegement, from the original sender's perspective, it's fire and forget.
+Ack packets are not repeated or routed or anything, nor are they authenticated.  Every step of mesh repeating has it's own acknowlegement, from the original sender's perspective, it's fire and forget.
 
 Like Meshtastic and most others, the protocol is "semi-reliable", there are, like all networks, edge cases causing failure.  
 
 Real reliability must be done at a higher level.
 
-For every packet, every interested listener and every repeater sends an acknowledge exactly once.
+For every packet, every interested lister to that specific channel sends an channel acknowlege exactly once.
 
-ACKs never get repeated even if the packet itself is, which makes it possible to approximately know the number
-of listeners by averaging the ACKs.
+For every packet on a transport that does not support loopback routing, repeaters send a repeater acknowlege the first time they see a packet.
 
-This means that any ACK getting lost will cause the sender to send the message over and over. For this reason, we
-must set a fairly low limit to the number of retries.
+For packets on transports that do support loopback, nodes do not need to send the acknowledge,
+because the repeated packet with the "first copy from this node" flag and the "I'm a repeater for packets like this" flag serves as the acknowledge.
+
+This lets a node determine how many other repeaters and channel listeners are in the area.
 
 
-No matter how many responses we typically get, a node should never expect more than 8 channel replies and 4 repeater replies.
-If there are more listeners than this, the protocol becomes semi-reliable.
-
-If a node has seen more than this number of acknowledgements, it can choose to not send it's own, to avoid congesting the network.
+Nodes may resend a message a few times if they get fewer than expected replies.
 
 
 ```
@@ -209,6 +209,12 @@ If a node has seen more than this number of acknowledgements, it can choose to n
 4 byte message ID:
   just the first 4 bytes of the random IV from the packet we are ACKing
 
+4 byte ack ID:
+
+Random number unique to the node, for debugging only.  More advanced implementations
+can use this to better count nodes.  Must not be the same for all channels on a node and must
+change periodically for privacy.
+
 ```
 
 ### Announce Packets
@@ -222,3 +228,14 @@ can be set up in advance and everything works even when times are out of sync.
 Nodes mesh via bluetooth using an extended advertising packet with service UUID
 d1a77e11-420f-9f11-1a00-10a6beef0001, and the payload just being the packet format above.
 
+
+BLE packets must not ever have the "first copy" flag set, and we do not count repeaters over BLE.
+The packet loss is just too high for any simple and scalable scheme I can think of.
+
+Therefore, we just treat it as an inherently lossy channel, which we mitigate somewhat by repeating packets up to 4 times, or until we need to stop doing that so we can send some other packet.
+
+As long as the node doesn't try to send more than a packet or two per second, the pure repeat
+scheme will provide some reliability, and if we go past that, then it will back off to
+not jam everything.
+
+We also stop sending if we see a too many other nodes in the same area sending too many copies of the packet.

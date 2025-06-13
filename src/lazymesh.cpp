@@ -68,6 +68,7 @@ LazymeshQueuedPacket::~LazymeshQueuedPacket()
 
 LazymeshChannel::LazymeshChannel()
 {
+  
 }
 
 LazymeshChannel::~LazymeshChannel()
@@ -716,6 +717,11 @@ void LazymeshChannel::poll()
     int size = 0;
     // Send three minutes ahead.
     this->encodeDataToPacket(packet, &size, 120);
+
+    // TTL=1 for the channel announces
+    packet[HEADER_1_BYTE_OFFSET] &= ~TTL_BITMASK;
+    packet[HEADER_1_BYTE_OFFSET] |= 1 << TTL_OFFSET;
+
     this->sendPacket(packet, size);
 
     if (this->lastSentAnnounce == 0)
@@ -724,9 +730,12 @@ void LazymeshChannel::poll()
       // If we have just powered up or manually commanded
       // Also send the current one, so nobody has to wait 3 minutes.
       this->encodeDataToPacket(packet, &size, 120);
+      // TTL=1 for the channel announces
+      packet[HEADER_1_BYTE_OFFSET] &= ~TTL_BITMASK;
+      packet[HEADER_1_BYTE_OFFSET] |= 1 << TTL_OFFSET;
+
       this->sendPacket(packet, size);
     }
-
     this->lastSentAnnounce = hours;
   }
 }
