@@ -105,26 +105,17 @@ std::string b64decode(const void *data, const size_t len) {
   return str;
 }
 
-std::string uint8_tToHex(const uint8_t *buffer, size_t length) {
-  std::string hexString;
-  for (size_t i = 0; i < length; i++) {
-    char hex[3];                      // flawfinder: ignore
-    sprintf(hex, "%02x", buffer[i]);  // flawfinder: ignore
-    hexString += hex;
-  }
-  return hexString;
-}
-
 
 
 LazymeshOpenDHTListener::LazymeshOpenDHTListener(const uint8_t *routing_id) {
   memcpy(this->routing_id, routing_id, 16);  // flawfinder: ignore
 
+  
   uint8_t hashedRoutingID[20];
 
   SHA256 sha256;
   sha256.reset();
-  sha256.update(routing_id, ROUTING_ID_GROUP_PART_LEN);
+  sha256.update(routing_id, ROUTING_ID_LEN);
   sha256.finalize(hashedRoutingID, 20);
 
   std::string hex = uint8_tToHex(hashedRoutingID, 20);
@@ -169,7 +160,7 @@ const uint8_t *LazymeshOpenDHTListener::poll() {
 
     std::string ciphertext = b64decode(doc["data"].as<std::string>().c_str(), doc["data"].as<std::string>().size());
 
-    GCM<AES256> gcm;
+    GCM<AES128> gcm;
 
     gcm.setKey(this->routing_id, 16);
 
@@ -273,11 +264,7 @@ bool LazymeshOpenDHTTransport::globalRoutePacket(const uint8_t *packet, int size
 
   SHA256 sha256;
   sha256.reset();
-  // Only use the part of the routing id that comes from the group key,
-  // to route the same group together
-  // this weakens the encryption, only 2**96 guesses to find the bottom half
-  // but we still have the inner cipher, this is just an opportunistic layer.
-  sha256.update(routingID, ROUTING_ID_GROUP_PART_LEN);
+  sha256.update(routingID, ROUTING_ID_LEN);
   sha256.finalize(hashedRoutingID, 20);
   std::string hex = uint8_tToHex(hashedRoutingID, 20);
 
@@ -294,7 +281,7 @@ bool LazymeshOpenDHTTransport::globalRoutePacket(const uint8_t *packet, int size
   
   memcpy(plaintext + 1, packet, size);  // flawfinder: ignore
 
-  GCM<AES256> gcm;
+  GCM<AES128> gcm;
 
   gcm.setKey(routingID, 16);
   gcm.setIV(outgoing, OUTER_CIPHER_IV_LEN);
@@ -403,7 +390,7 @@ void LazymeshOpenDHTTransport::poll() {
      LAZYMESH_DEBUG("Attempt decode");
 
 
-      GCM<AES256> gcm;
+      GCM<AES128> gcm;
       gcm.setKey((*it)->routing_id, 16);
       gcm.setIV(raw, OUTER_CIPHER_IV_LEN);
       gcm.decrypt(ciphertext, ciphertext, size - OUTER_CIPHER_IV_LEN - OUTER_CIPHER_TAG_LEN);
@@ -417,7 +404,8 @@ void LazymeshOpenDHTTransport::poll() {
           Serial.println(packetSize);
           continue;
         }
-
+        
+        packet[HEADER_1_BYTE_OFFSET] |= (1 << WAS_GLOBAL_ROUTED_OFFSET);
         LAZYMESH_DEBUG("Fully decoded packet from openDHT");
         LAZYMESH_DEBUG(packetSize);
         LazymeshPacketMetadata meta;

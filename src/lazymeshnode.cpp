@@ -8,12 +8,12 @@
 uint8_t decrementTTLInPlace(uint8_t *packet)
 {
     uint8_t header = packet[HEADER_1_BYTE_OFFSET];
-    uint8_t withoutTTL = header & ~(7 << 2);
-    uint8_t ttl = (header >> 2) & 7;
+    uint8_t withoutTTL = header & ~(TTL_BITMASK << TTL_OFFSET);
+    uint8_t ttl = (header >> TTL_OFFSET) & TTL_BITMASK;
     if (ttl > 0)
     {
         ttl--;
-        packet[HEADER_1_BYTE_OFFSET] = withoutTTL | ((ttl - 1) << 2);
+        packet[HEADER_1_BYTE_OFFSET] = withoutTTL | ((ttl) << TTL_OFFSET);
     }
     return ttl;
 }
@@ -408,6 +408,7 @@ void LazymeshNode::sendAcknowledgementPacket(const uint8_t *packet, int size, co
 // in the channel objects.
 void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, LazymeshTransport *source, LazymeshChannel *localChannel)
 {
+    LAZYMESH_DEBUG("Handling data packet");
     // Bootstrap the time, if we don't have a local time, just accept any random time
     // and see if that lets us decode anything.
     uint32_t unixTime = *reinterpret_cast<const uint32_t *>(incomingPacket + TIME_BYTE_OFFSET);
@@ -415,6 +416,8 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
 
     uint8_t packet[256];
     memcpy(packet, incomingPacket, size);
+    LAZYMESH_DEBUG("handkleDataPacket");
+    LAZYMESH_DEBUG(packet[HEADER_1_BYTE_OFFSET]);
 
     uint8_t packetType = packet[HEADER_1_BYTE_OFFSET] & PACKET_TYPE_BITMASK;
 
@@ -428,6 +431,8 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
         LAZYMESH_DEBUG("Duplicate packet");
         return;
     }
+    LAZYMESH_DEBUG("not duplicate packet");
+
 
     // Mark it as repeated or repeatable or generally to be included in repeater counts.
     if (source || this->isRouteEnabled(meshRouteNumber))
@@ -438,6 +443,7 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
     {
         packet[HEADER_2_BYTE_OFFSET] &= ~(1 << HEADER_2_REPEATER_BIT);
     }
+    LAZYMESH_DEBUG("h1");
 
     bool localHandled = false;
     // Don't try to decode our own keepalives and spam logs in the process
@@ -470,23 +476,23 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
     if (getPacketTTL(packet) > 0)
     {
         LAZYMESH_DEBUG("Packet still has hops left");
+
         decrementTTLInPlace(packet);
+
 
         bool globalRoute = false;
         if (this->isRouteEnabled(meshRouteNumber) || source == NULL)
         {
+            LAZYMESH_DEBUG("Packet can be routed");
             // Non-loopback transports use repeater ACKs to count the repeats
             if (source && (!source->allowLoopbackRouting) && packetType == PACKET_TYPE_DATA_RELIABLE)
             {
                 this->sendAcknowledgementPacket(packet, size, nullptr, source);
             }
 
-            LAZYMESH_DEBUG("Packet can be routed");
-            // Assume that every node is only part of one global routing
-            // And that there is no reason for any node to post
-            // what we have already posted
-            bool canGlobalRoute = packet[HEADER_1_BYTE_OFFSET] & (1 << 6);
-            bool wasGlobalRouted = packet[HEADER_1_BYTE_OFFSET] & (1 << 7);
+
+            bool canGlobalRoute = packet[HEADER_1_BYTE_OFFSET] & (1 << GLOBAL_ROUTE_OFFSET);
+            bool wasGlobalRouted = packet[HEADER_1_BYTE_OFFSET] & (1 << WAS_GLOBAL_ROUTED_OFFSET);
 
             if (canGlobalRoute && !wasGlobalRouted)
             {
@@ -505,6 +511,18 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
                     {
                         break;
                     }
+                }
+            }
+            else
+            {
+                LAZYMESH_DEBUG("Packet cannot be global routed");
+                if (wasGlobalRouted)
+                {
+                    LAZYMESH_DEBUG("Packet was already global routed");
+                }
+                if (!canGlobalRoute)
+                {
+                    LAZYMESH_DEBUG("Not enabled on this packet");
                 }
             }
 
@@ -550,6 +568,13 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
 
 void LazymeshNode::handlePacket(LazymeshPacketMetadata &meta)
 {
+
+    LAZYMESH_DEBUG("LazymeshNode::handlePacket");
+
+    LAZYMESH_DEBUG(meta.packet[0]);
+    LAZYMESH_DEBUG(meta.packet[1]);
+    LAZYMESH_DEBUG(meta.packet[2]);
+    LAZYMESH_DEBUG(meta.packet[3]);
 
     const uint8_t *incomingPacket = meta.packet;
     int size = meta.size;

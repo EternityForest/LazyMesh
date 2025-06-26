@@ -32,13 +32,13 @@ LazymeshQueuedPacket::LazymeshQueuedPacket(uint8_t *newpacket, int len, int expe
   memcpy(this->packet.data(), newpacket, len);
 
   // Shorter packers don't have the routing ID
-  if(len >= PACKET_OVERHEAD){
-      memcpy(&this->packetID, newpacket + PACKET_ID_64_OFFSET, 8);
+  if (len >= PACKET_OVERHEAD)
+  {
+    memcpy(&this->packetID, newpacket + PACKET_ID_64_OFFSET, 8);
   }
 
   // Mark it as first send attemp from this node
   this->packet[HEADER_2_BYTE_OFFSET] |= (1 << HEADER_2_FIRST_SEND_ATTEMPT_BIT);
-
 
   this->expectAck = (packet[0] & 3) == PACKET_TYPE_DATA_RELIABLE;
   this->timestamp = millis();
@@ -46,11 +46,13 @@ LazymeshQueuedPacket::LazymeshQueuedPacket(uint8_t *newpacket, int len, int expe
   this->attemptsRemaining = 6;
 
   // Nobody is listening, don't resend a bunch
-  if(expectChannelListeners == 0 && expectRepeaterListeners == 0){
+  if (expectChannelListeners == 0 && expectRepeaterListeners == 0)
+  {
     this->attemptsRemaining = 2;
   }
 
-  if(!this->expectAck){
+  if (!this->expectAck)
+  {
     this->attemptsRemaining = 1;
   }
 
@@ -68,7 +70,6 @@ LazymeshQueuedPacket::~LazymeshQueuedPacket()
 
 LazymeshChannel::LazymeshChannel()
 {
-  
 }
 
 LazymeshChannel::~LazymeshChannel()
@@ -92,11 +93,10 @@ void LazymeshChannel::sendPacket(const uint8_t *packet, int size)
   free(buf);
 }
 
-void LazymeshChannel::sendPacket(JsonDocument &packet, bool reliable)
+void LazymeshChannel::sendPacket(LazymeshPayload &packet, bool reliable)
 {
   uint8_t buf[256];
-  serializeMsgPack(packet, (char *)buf, MAX_PACKET_SIZE - PACKET_OVERHEAD);
-  int len = strlen((char *)buf);
+  int len = serializeMsgPack(packet.jsonDoc, (char *)buf, MAX_PACKET_SIZE - PACKET_OVERHEAD);
   encodeDataToPacket(buf, &len, 0, reliable);
   if (len)
   {
@@ -105,7 +105,7 @@ void LazymeshChannel::sendPacket(JsonDocument &packet, bool reliable)
 }
 
 // Override this is your custom class
-void LazymeshChannel::onReceivePacket(JsonDocument &decoded)
+void LazymeshChannel::onReceivePacket(LazymeshPayload &decoded, LazymeshPacketMetadata & meta)
 {
 }
 
@@ -293,7 +293,7 @@ void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdv
     packetbuffer[HEADER_1_BYTE_OFFSET] = PACKET_TYPE_DATA;
   }
 
-  packetbuffer[HEADER_1_BYTE_OFFSET] |= this->outgoingTTL << 2;
+  packetbuffer[HEADER_1_BYTE_OFFSET] |= this->outgoingTTL << TTL_OFFSET;
 
   LAZYMESH_DEBUG("Outgoing TTL");
   LAZYMESH_DEBUG(this->outgoingTTL);
@@ -351,13 +351,13 @@ void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdv
   }
   else
   {
-    this->getTargetHashForTime(unixTimeRaw + timeAdvance, packetbuffer);
+    this->getTargetHashForTime(unixTimeRaw + timeAdvance, packetbuffer + ROUTING_ID_BYTE_OFFSET);
   }
 
   LAZYMESH_DEBUG("Sending withTarget hash");
   LAZYMESH_DEBUG(this->targetHash[0]);
 
-  GCM<AES256> gcm;
+  GCM<AES128> gcm;
 
   uint8_t derivedKey[16];
   deriveEncryptionKey(this->psk, unixTimeRaw + timeAdvance, derivedKey);
@@ -367,9 +367,9 @@ void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdv
   // We need to encrypt the packet.  Leave room for the auth tag.
   gcm.encrypt(packetbuffer + CIPHERTEXT_BYTE_OFFSET, packet, *size);
 
-  gcm.computeTag(packetbuffer + AUTH_TAG_BYTE_OFFSET, AUTH_TAG_LEN);
+  gcm.computeTag(packetbuffer + CIPHERTEXT_BYTE_OFFSET + *size, AUTH_TAG_LEN);
   LAZYMESH_DEBUG("Computed tag");
-  LAZYMESH_DEBUG((packetbuffer + AUTH_TAG_BYTE_OFFSET)[0]);
+  LAZYMESH_DEBUG((packetbuffer + *size + CIPHERTEXT_BYTE_OFFSET)[0]);
 
   *size += PACKET_OVERHEAD;
 
@@ -382,7 +382,7 @@ void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdv
 int getPacketTTL(const uint8_t *packet)
 {
   uint8_t header = packet[HEADER_1_BYTE_OFFSET];
-  return (header >> 2) & 7;
+  return (header >> TTL_OFFSET) & TTL_BITMASK;
 }
 
 /* Compute the rolling code hash of the current hour and the next closest hour
@@ -442,11 +442,6 @@ void LazymeshChannel::getTargetHashForTime(uint32_t timestamp, uint8_t *output)
   sha256.reset();
   sha256.update(to_hash, 21);
   sha256.finalize(output, 16);
-
-  memcpy(to_hash + 5, groupKey, 16); // flawfinder: ignore
-  sha256.reset();
-  sha256.update(to_hash, 21);
-  sha256.finalize(output, ROUTING_ID_GROUP_PART_LEN);
 }
 
 void LazymeshChannel::setChannel(const char *password)
@@ -456,18 +451,6 @@ void LazymeshChannel::setChannel(const char *password)
   sha256.reset();
   sha256.update((const uint8_t *)password, strnlen(password, 255));
   sha256.finalize(psk, 16);
-  memcpy(this->groupKey, psk, 16);
-  computeTargetHash(true);
-}
-
-void LazymeshChannel::setChannel(const char *password, const char *group)
-{
-  this->setChannel(password);
-  SHA256 sha256;
-  sha256.reset();
-  sha256.update((const uint8_t *)group, strnlen(group, 255));
-  sha256.finalize(this->groupKey, 16);
-
   computeTargetHash(true);
 }
 
@@ -555,7 +538,7 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
   LAZYMESH_DEBUG("Unix time");
   LAZYMESH_DEBUG(unixTime);
 
-  const uint8_t *authTag = packetPointer + AUTH_TAG_BYTE_OFFSET;
+  const uint8_t *authTag = packetPointer + size - AUTH_TAG_LEN;
 
   const uint8_t *ciphertext = packetPointer + CIPHERTEXT_BYTE_OFFSET;
 
@@ -581,7 +564,7 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
 
   if (trusted)
   {
-    GCM<AES256> gcm;
+    GCM<AES128> gcm;
 
     uint8_t derivedKey[16];
     deriveEncryptionKey(this->psk, unixTimeRaw, derivedKey);
@@ -608,7 +591,9 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
   {
 
     LAZYMESH_DEBUG("Attempt to interpret msgpack");
-    JsonDocument doc;
+
+    LazymeshPayload payload;
+    JsonDocument &doc = payload.jsonDoc;
 
     if (deserializeMsgPack(doc, plaintext) != DeserializationError::Ok)
     {
@@ -675,7 +660,7 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
       LAZYMESH_DEBUG("Not an array");
       trusted = false;
     }
-    this->onReceivePacket(doc);
+    this->onReceivePacket(payload, meta);
   }
 
   if (trusted)
@@ -719,8 +704,10 @@ void LazymeshChannel::poll()
     this->encodeDataToPacket(packet, &size, 120);
 
     // TTL=1 for the channel announces
-    packet[HEADER_1_BYTE_OFFSET] &= ~TTL_BITMASK;
+    packet[HEADER_1_BYTE_OFFSET] &= ~(TTL_BITMASK << TTL_OFFSET);
     packet[HEADER_1_BYTE_OFFSET] |= 1 << TTL_OFFSET;
+    LAZYMESH_DEBUG("Announce header 1");
+    LAZYMESH_DEBUG(packet[HEADER_1_BYTE_OFFSET]);
 
     this->sendPacket(packet, size);
 
@@ -731,8 +718,10 @@ void LazymeshChannel::poll()
       // Also send the current one, so nobody has to wait 3 minutes.
       this->encodeDataToPacket(packet, &size, 120);
       // TTL=1 for the channel announces
-      packet[HEADER_1_BYTE_OFFSET] &= ~TTL_BITMASK;
+      packet[HEADER_1_BYTE_OFFSET] &= ~(TTL_BITMASK << TTL_OFFSET);
       packet[HEADER_1_BYTE_OFFSET] |= 1 << TTL_OFFSET;
+      LAZYMESH_DEBUG("Announce header 1");
+      LAZYMESH_DEBUG(packet[HEADER_1_BYTE_OFFSET]);
 
       this->sendPacket(packet, size);
     }

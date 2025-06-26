@@ -156,7 +156,7 @@ bool BLEExtendedAdvTransport::sendPacket(const uint8_t *data, int len)
 
   memcpy(&packetID,  data + PACKET_ID_64_OFFSET, 8);
 
-    // Disable the first send attempt feature on BLE.
+  // Disable the first send attempt feature on BLE.
   // It doesn't work well anyway.
   buf[17+ HEADER_2_BYTE_OFFSET] &= ~(1 << HEADER_2_FIRST_SEND_ATTEMPT_BIT);
   

@@ -10,6 +10,7 @@
 #include <set>
 #include <WiFi.h>
 #include <AsyncUDP.h>
+#include <ArduinoJson.h>
 #include "./httpclient.h"
 
 typedef enum LazymeshTimeTrustLevel
@@ -21,7 +22,6 @@ typedef enum LazymeshTimeTrustLevel
 } LazymeshTimeTrustLevel;
 
 #define ROUTING_ID_LEN 16
-#define AUTH_TAG_LEN 6
 
 #define HEADER_1_BYTE_OFFSET 0
 #define HEADER_2_BYTE_OFFSET 1
@@ -30,22 +30,20 @@ typedef enum LazymeshTimeTrustLevel
 #define ROUTING_ID_BYTE_OFFSET 4
 #define RANDOMNESS_BYTE_OFFSET 20
 #define TIME_BYTE_OFFSET 28
-#define AUTH_TAG_BYTE_OFFSET 32
-#define CIPHERTEXT_BYTE_OFFSET 38
+#define CIPHERTEXT_BYTE_OFFSET 32
+
+#define AUTH_TAG_LEN 6
 
 // Gets you 4 bytes of randomness and 4 bytes of time
 // sorts by time, used as the ID in acknowledgements
 #define PACKET_ID_64_OFFSET (RANDOMNESS_BYTE_OFFSET + 4)
 
-// The offset that gets you 4 bytes of the group part
-// and 4 bytes of the channel specific part, as a weaker version
-// of the routing ID for internal use
+// Weaker version of the above for internal use
 #define ROUTING_ID_64_OFFSET (RANDOMNESS_BYTE_OFFSET + 8)
-#define ROUTING_ID_GROUP_PART_LEN 12
 
 // Header 1 bits
-#define PACKET_TYPE_BITMASK 0b11;
-#define TTL_BITMASK 0b111;
+#define PACKET_TYPE_BITMASK 0b11
+#define TTL_BITMASK 0b111
 #define TTL_OFFSET 2
 #define SLOW_TRANSPORT_OFFSET 5
 #define GLOBAL_ROUTE_OFFSET 6
@@ -68,7 +66,6 @@ typedef enum LazymeshTimeTrustLevel
 
 #define CONTROL_PACKET_TYPE_OFFSET 2
 #define CONTROL_PACKET_DATA_OFFSET 3
-// These messages do not expect
 #define PACKET_TYPE_CONTROL 0
 #define PACKET_TYPE_DATA 1
 #define PACKET_TYPE_DATA_RELIABLE 2
@@ -104,15 +101,106 @@ public:
   LazymeshNeighborChannelInterest() {};
 };
 
+class PayloadIterator
+{
+public:
+  using Pair = std::pair<int, const JsonVariant>;
+
+  explicit PayloadIterator(JsonDocument *arr, size_t index = 0)
+      : _array(arr), _index(index) {}
+
+  bool operator!=(const PayloadIterator &other) const
+  {
+    return _index != other._index;
+  }
+
+  PayloadIterator &operator++()
+  {
+    _index += 2; // Skip ID and item together
+    return *this;
+  }
+
+  const Pair operator*() 
+  {
+    JsonArray arr = _array->as<JsonArray>();
+    int id = arr[_index].as<int>();
+    JsonVariant item = arr[_index + 1];
+    return {id, item};
+  }
+
+private:
+  JsonDocument *_array;
+  size_t _index;
+};
+
+/*Represents a lazymesh payload with easy helpers to read the standard format
+*/
+class LazymeshPayload
+{
+public:
+  JsonDocument jsonDoc;
+
+
+  bool hasItem(int id) {
+    for(int i = 0; i < jsonDoc.size(); i += 2) {
+      if(jsonDoc[i] == id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+
+  // add an (id, std::string) pair
+  void addString(int id, const std::string &value)
+  {
+    jsonDoc.add(id);
+    jsonDoc.add(value);
+  }
+
+  // add an (id, integer) pair
+  void addInt(int id, int value)
+  {
+    jsonDoc.add(id);
+    jsonDoc.add(value);
+  };
+
+  LazymeshPayload()
+  {
+    jsonDoc.to<JsonArray>();
+  };
+
+  PayloadIterator begin()
+  {
+    // If the array is odd size, treat it like there are no elements
+    if (jsonDoc.size() % 2)
+    {
+      LAZYMESH_DEBUG("Odd array size");
+      return PayloadIterator(&jsonDoc, jsonDoc.size());
+    }
+
+    if(!jsonDoc.is<JsonArray>())
+    {
+      LAZYMESH_DEBUG("Not an array");
+      return PayloadIterator(&jsonDoc, jsonDoc.size());
+    }
+
+    return PayloadIterator(&jsonDoc, 0);
+  }
+
+  PayloadIterator end()
+  {
+    return PayloadIterator(&jsonDoc, jsonDoc.size());
+  }
+};
 
 class LazymeshSeenPacketReport
 {
-  public:
+public:
   uint8_t totalSeen = 0;
   uint8_t uniqueRepeatersSeen = 0;
 };
 
-// Placeholdre
 class LazymeshPacketMetadata
 {
 public:
@@ -153,6 +241,7 @@ public:
 
   int gotChannelAck = 0;
   int gotRepeaterAck = 0;
+  
 
   LazymeshQueuedPacket(uint8_t *packet, int len, int expectChannelListeners, int expectRepeaterListeners);
   ~LazymeshQueuedPacket();
@@ -184,9 +273,6 @@ private:
   std::map<uint32_t, int32_t> state;
   std::map<uint32_t, std::string> stringState;
 
-
-
-
 public:
   // It's a float because we do some peak detect averaging.
   float listeners = 0;
@@ -203,10 +289,6 @@ public:
 
   uint8_t psk[16];
 
-  // This lets you force a channel toshare the same routing id hop
-  // pattern as another channel, for the first 8 bytes
-  uint8_t groupKey[16];
-
   // Track what we currently need to send
   std::set<uint32_t> toSend;
   // What data IDs we are listening for and updating our internal state from.
@@ -219,19 +301,12 @@ public:
   // This tracks what data we can send on request
   std::set<uint32_t> canSend;
 
-
-
   void poll();
 
   void encodeDataToPacket(uint8_t *packet, int *size, int timeAdvance, bool reliable = false);
 
-  // Sets the channel. Channels are defined by a password and optionally a group key
+  // Sets the channel. Channels are defined by a password
   void setChannel(const char *password);
-
-  // The group key is used to make a set of channels share a routing pattern.
-  // If you have a bunch of IoT devices in a tiny area, you can make them all
-  // share one connection to an OpenDHT server.
-  void setChannel(const char *password, const char *groupKey);
 
   void computeTargetHash(bool force);
   void getTargetHashForTime(uint32_t unixTime, uint8_t *output);
@@ -244,10 +319,10 @@ public:
   // User applications should probably use the JsonDocument version.
   void sendPacket(const uint8_t *packet, int size);
   // Send a packet
-  void sendPacket(JsonDocument &packet, bool reliable = false);
+  void sendPacket(LazymeshPayload &packet, bool reliable = false);
 
   // Override this is your custom class
-  virtual void onReceivePacket(JsonDocument &decoded);
+  virtual void onReceivePacket(LazymeshPayload &payload, LazymeshPacketMetadata & meta);
 
   // Override this if you want
   virtual void onPoll();
@@ -264,15 +339,13 @@ public:
   LazymeshNode *node = NULL;
   bool allowLoopbackRouting = false;
 
-
   // Is the transport fast enough that we don't need
   // to be concerned with a packet or two per second of bandwidth?
   bool fast = false;
-  
+
   // If true, count the othe repeaters on the network
   // and resend until they all get it.
   bool enableAutoResend = true;
-
 
   // True if this is a slow transport
   bool isSlow = false;
@@ -297,7 +370,6 @@ class LazymeshNode
 {
 
 private:
-
   // Sorted by descending speed, because we may want to try them in order
   // we don't want a failed send on a fast one to cause a resend on a slow one
   std::vector<LazymeshTransport *> transports;
@@ -375,10 +447,12 @@ public:
   {
     // If it is a fast transport it must go near the front of the list,
     // so that if it fails, it will not cause the slow transports to have to send again
-    if(t->fast){
+    if (t->fast)
+    {
       this->transports.insert(this->transports.begin(), t);
     }
-    else{
+    else
+    {
       this->transports.push_back(t);
     }
     t->node = this;
@@ -499,7 +573,6 @@ public:
 private:
   unsigned long advTime = 0;
 
-
   // The current packet we are repeatedly sending
   uint64_t outgoingPacketID = 0;
   // How many incoming copies of it we've seen,
@@ -514,3 +587,6 @@ private:
   void setupBLE();
 };
 #endif
+
+// Util
+std::string uint8_tToHex(const uint8_t *buffer, size_t length);

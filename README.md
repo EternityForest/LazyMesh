@@ -50,41 +50,44 @@ In Lazymesh, everything is a channel, there are no direct messages. If you want 
 
 Channels are defined by a password, knowing the password allows read and write access.
 
-Data packets on a channel are Messagepack objects.  If they are an array, they must by a list of alternating data IDs and values, where data IDs are from a reserved list(TBD).
 
 ## Route numbers
 
 There are 256 route numbers.  Every packet has one, and repeaters only repeat if  they have enabled a matching
 route number.  By default, everything is sent with route number 0, which is enabled by default.
 
-This only affects repeaters, nodes will listen to any mesh route numberif it is directly for them.
+This only affects repeaters, nodes will listen to any mesh route number if it is directly for them.
 
+## Payloads
 
+Packet payloads are MessagePack arrays.  They alternate integer data IDs and
+data items.  192-256 are reserved for application-specific messages.
 
+ID 32 is for text messages, which can be prefixed with a username and a colon.
+
+ID 2 is used for a unique ID, wich can be a string, bytes, or integer, but must be unique per-channel.  Many applications don't actually need this.
 
 ## Transports
 
-### OpenDHT Routing
 
-Nodes that are directly connected to the internet can communicate through an OpenDHT Proxy, and no
-account or signup is needed. Unlike with MQTT backends, nodes on different proxies can still communicate,
-because the entire DHT is a distributed global swarm.
+### MQTT Routing
 
-These nodes can forward up to 1 packet per minute from other nodes onto the DHT.
+Append a metadata length byte and N bytes of metadata.
 
-They cannot forward any traffic from the DHT onto the mesh, except for traffic on the channels and groups the gateway device
-is specifically configured for.  It doesn't work like a cell tower, but it does allow roaming nodes to send out a few 
-packets to a reciever that has internet access.
+To create the IV, take 12 random bytes for the IV.
+Then encrypt the whole thing.
+Prepend the IV and append 4 auth tag bytes.
 
-Packets can only be globally routed if they have the global routing bit set.  Nodes that have already global
-routed a packet will unset this bit, so that other nodes don't do it redundantly.
 
-Packets coming from OpenDHT will have the "was global routed" bit set and can never go back on the internet,
-only one hop is allowed.
+Then take the first 8 bytes of the routing ID hash and convert to hex.
 
-The data format allows for metadata to be added in the future along with the packet.
+The MQTT topic will be lazymesh_route_HEX
 
-The OpenDHT keys change hourly, and all traffic to the DHT has an extra layer of encryption.
+Note that we use a top-level topic.  This is so you can't use wildcards
+to subscribe to all lazymesh channels at once on public brokers,
+which would allow you to DoS everyone rather easily.
+
+
 
 ### UDP Routing
 
@@ -114,7 +117,14 @@ All numbers are little-endian.
         Marks that this packet should be included when counting repeaters.
         Set it if you would repeat the packet or one like it, even if you originated it.
 
-    6 reserved 0 bits
+    1 bit location enabled
+        If this bit is set, repeaters may add location metadata to the packets forwarded to the internet. This metadata must be encrypted with the routing ID as the key,
+        meaning nearby people could track you for 1 hour after you get out of range.
+
+        Not implemented anywhere at the moment.
+
+
+    5 reserved 0 bits
 
 
 
@@ -130,26 +140,14 @@ All numbers are little-endian.
     10dbm extra loss on wifi.
 
 16 bytes routing ID:
-    Changes every hour, derived from the channel PSK byte a hash.
-    The PSK just the 16 byte SHA256 of the password.
-    The group key is the 16 byte sha256 of a different password, or just the
-    same as the psk if no group is being used.
+    Changes every hour, derived from the channel PSK by a hash.
+    The PSK is just the 16 byte SHA256 of the password.
 
-    The first 12 bytes are the first 12 bytes of the  SHA256 of:
-        The letter 'r'
-        The count of hours since 1970 as a 32 bit unsigned int
-        the group key
-
-    The remaining 4 bytes are the last 4 bytes of the  SHA256 of:
-        The letter 'r'
+    The routing ID changes hourly, and is the SHA256 of:
+        The letter 'cr'
         The count of hours since 1970 as a 32 bit unsigned int
         the PSK
-
-    If the group key and psk are the same, then the whole thing
-    is equivalent to if you'd just hashed ('r'+hours+group key).
-
-    The separate group key is so that multiple channels can route together
-    and save space in routing tables or OpenDHT connection lists.
+    
 
 
 8 Bytes random entropy:
@@ -158,17 +156,17 @@ All numbers are little-endian.
 4 bytes timestamp:
    Also part of the IV, also prevents replay attacks
 
-6 bytes auth tag:
-   The auth tag comes before the ciphertext because it(subjectively)
-   makes the code simpler.
-
 N bytes ciphertext:
     AES-GCM encrypted.
 
-    The encryption key also changes hourly, and is the SHA256 of:
-        The letter 'r'
+    The encryption key changes hourly, and is the SHA256 of:
+        The letter 'c'
         The count of hours since 1970 as a 32 bit unsigned int
         the PSK
+
+6 bytes auth tag:
+    The last 6 bytes are the GCM tag
+
 ```
 
 ## ACK Packets and Retries

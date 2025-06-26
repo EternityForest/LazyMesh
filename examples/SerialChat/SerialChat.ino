@@ -12,30 +12,25 @@ LazymeshNode node;
 
 
 class MyChannel : public LazymeshChannel {
-  void onReceivePacket(JsonDocument& doc) {
-    Serial.println("Got Packet!");
-    int dataID = 0;
-    for (JsonVariant value : doc.as<JsonArray>()) {
-      if (dataID == 0) {
-        dataID = value.as<int>();
-        continue;
-      }
-
-      if (dataID == DATA_ID_TEXT_MESSAGE) {
+  void onReceivePacket(LazymeshPayload& payload, LazymeshPacketMetadata & meta) {
+    LAZYMESH_DEBUG("pkt");
+    for (auto [id, value] : payload) {
+      LAZYMESH_DEBUG(id);
+      if (id == DATA_ID_TEXT_MESSAGE) {
         Serial.println(value.as<std::string>().c_str());
       }
-      // Reset to read the next ID
-      dataID = 0;
     }
   }
 };
 MyChannel channel;
 
-// Lazymesh uses pluggable transports, so it can run over multiple different protocols.
-// Here we use UDP and OpenDHT.
-// LazymeshUDPTransport transport;
-// LazymeshOpenDHTTransport dht;
+
+// Pluggable transports, we can use UDP, BLE, and MQTT
+// And route between all three
+
+LazymeshUDPTransport transport;
 BLEExtendedAdvTransport blet;
+LazymeshMQTTTransport mqtt;
 
 std::string buf = "";
 
@@ -48,17 +43,17 @@ void setup() {
   WiFi.mode(WIFI_STA);
   Serial.begin(9600);
 
-  // You could use a self-hosted proxy.
-  //dht.setProxy("dhtproxy.jami.net");
+  // Public Mosquitto instance
+  mqtt.setServer("test.mosquitto.org");
 
   node.addChannel(&channel);
 
-  //node.addTransport(&transport);
-  //node.addTransport(&dht);
+  node.addTransport(&transport);
   node.addTransport(&blet);
+  node.addTransport(&mqtt);
 
 
-  WiFi.begin("WifiName", "Password");
+  WiFi.begin("SSID", "Password");
 
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -70,21 +65,19 @@ void setup() {
 
 
   // Begin once the internet is set up
-  // transport.begin();
-  // dht.begin();
+  transport.begin();
   blet.begin();
-  // timeClient.begin();
+  mqtt.begin();
+  timeClient.begin();
 
-  // If this fails we cannot do anything, the protocol has a hard requirement that the time is known
-  // The time can be +- 90 seconds, so manual sync or bluetooth works just fine.
-  // Also, once initially set, nodes will adjust their time to stay in sync.
+  // // If this fails we cannot do anything, the protocol has a hard requirement that the time is known
+  // // The time can be +- 90 seconds, so manual sync or bluetooth works just fine.
+  // // Also, once initially set, nodes will adjust their time to stay in sync.
   if (timeClient.update()) {
     node.setTime(timeClient.getEpochTime(), LAZYMESH_TIME_TRUST_LEVEL_LOCAL);
   }
 
-  // Could just set fixed time and start nodes at same time too
-  // for testing
-  // node.setTime(5,LAZYMESH_TIME_TRUST_LEVEL_LOCAL);
+  ///node.setTime(5,LAZYMESH_TIME_TRUST_LEVEL_LOCAL);
 
 
   // We can have 2 of the same channel on the same node, and they talk to each other
@@ -100,18 +93,18 @@ void loop() {
     char c = Serial.read();
 
     if (c == '\r') {
-    
+
     }
 
     else if (c == '\n') {
-      JsonDocument doc;
-      JsonArray d = doc.to<JsonArray>();
-      d.add(DATA_ID_TEXT_MESSAGE);
-      d.add(username + ": " + buf);
+      LazymeshPayload payload;
+      payload.addString(DATA_ID_TEXT_MESSAGE, username + ": " + buf);
+      Serial.print(username.c_str());
+      Serial.print(": ");
+      Serial.println(buf.c_str());
       buf = "";
-      Serial.println("Sending...");
 
-      channel.sendPacket(doc, true);
+      channel.sendPacket(payload, true);
     } else {
       if (buf.size() < 120) {
         buf.push_back(c);
