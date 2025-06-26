@@ -12,12 +12,20 @@ It does not have Meshtastic-style next hop routing, hence the name LazyMesh.  If
 
 ## Chat Sketch
 
-Right now this is the only actual application. Open the example Arduino sketch, modify it with your username,
-and a secret channel key which must be a strong password.
+Right now this is the only actual application. Open the example Arduino sketch, modify it with your username, and a secret channel key which must be a strong password.
 
 Type your message in the Arduino serial monitor, and you should be able to chat with all other devices.
 
 Messages should get through as long as nodes are either on the same network, or both have internet access.
+
+
+Visit the [Web Client](https://eternityforest.github.io/LazyMeshWeb/) to chat
+with the node via MQTT from the internet.  Just set a username, add a channel,
+and enter the channel password.  The channel name can be anything and only affects
+the labeling in the UI.
+
+The Web Client is currently hardcoded to use test.mosquitto.org, this will
+change in the future.
 
 ## Features
 
