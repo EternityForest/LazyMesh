@@ -61,8 +61,8 @@ typedef enum LazymeshTimeTrustLevel
 // Header, header, meshRouteNumber, path loss, 8 bytes randomness for nonce, 4 byte time, auth tag
 #define PACKET_OVERHEAD (1 + 1 + 1 + 1 + 8 + 4 + ROUTING_ID_LEN + AUTH_TAG_LEN)
 
-//#define LAZYMESH_DEBUG(x) Serial.println(x);
-#define LAZYMESH_DEBUG(x)
+#define LAZYMESH_DEBUG(x) Serial.println(x);
+//#define LAZYMESH_DEBUG(x)
 
 #define CONTROL_PACKET_TYPE_OFFSET 2
 #define CONTROL_PACKET_DATA_OFFSET 3
@@ -79,8 +79,15 @@ typedef enum LazymeshTimeTrustLevel
 #define CONTROL_TYPE_REPEATER_ACKNOWLEDGE 2
 
 #define DATA_ID_WANTED 1
+#define DATA_ID_NODE_ID 2
+#define DATA_ID_DESTINATION 5
+#define DATA_ID_WRITE_COMMAND 6
+
 #define DATA_ID_TEXT_MESSAGE 32
+#define DATA_ID_USERNAME 33
+
 #define DATA_ID_INVALID 2000000000
+
 
 #define MCAST_GROUP IPAddress(224, 0, 0, 251)
 #define MCAST_PORT 2221
@@ -164,6 +171,25 @@ public:
     jsonDoc.add(id);
     jsonDoc.add(value);
   };
+
+  // Add the node ID to the packet so recievers know who sent it
+  // Not needed on some packets. 
+  void addNodeID(uint64_t nodeID) {
+    jsonDoc.add(DATA_ID_NODE_ID);
+    jsonDoc.add(nodeID);
+  }
+
+  /* Causes data IDs added after this to be interoreted as register writes
+     instead of value declarations.  Set node ID to 0 to write to any and all devices.
+  */
+  void beginWriteCommand(uint64_t nodeID) {
+    jsonDoc.add(DATA_ID_WRITE_COMMAND);
+    jsonDoc.add(1);  
+    if(nodeID){
+      jsonDoc.add(DATA_ID_DESTINATION);
+      jsonDoc.add(nodeID);
+    }
+  }
 
   LazymeshPayload()
   {
@@ -276,6 +302,11 @@ private:
 public:
   // It's a float because we do some peak detect averaging.
   float listeners = 0;
+
+  // If nonzero, automatically sent packets get sent with this.
+  // This is only unique within a channel, it does not need to
+  // be globally unique.
+  uint64_t nodeID = 0;
 
   // What TTL we send with packets
   int outgoingTTL = 3;

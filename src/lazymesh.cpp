@@ -105,7 +105,7 @@ void LazymeshChannel::sendPacket(LazymeshPayload &packet, bool reliable)
 }
 
 // Override this is your custom class
-void LazymeshChannel::onReceivePacket(LazymeshPayload &decoded, LazymeshPacketMetadata & meta)
+void LazymeshChannel::onReceivePacket(LazymeshPayload &decoded, LazymeshPacketMetadata &meta)
 {
 }
 
@@ -181,6 +181,12 @@ void LazymeshChannel::flushToSend(uint8_t *packet, int *size)
 
   if (!toSend.empty())
   {
+    if (this->nodeID != 0)
+    {
+      d.add(2);
+      d.add(this->nodeID);
+    }
+
     for (int num : toSend)
     {
       LAZYMESH_DEBUG("I should send");
@@ -587,6 +593,8 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
     LAZYMESH_DEBUG("Pass auth");
   }
 
+  bool forUs = true;
+
   if (trusted && (size - PACKET_OVERHEAD) > 0)
   {
 
@@ -608,50 +616,106 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
     if (doc.is<JsonArray>())
     {
       LAZYMESH_DEBUG("Got array");
+
       for (JsonVariant value : doc.as<JsonArray>())
       {
-        LAZYMESH_DEBUG("Recv");
-        LAZYMESH_DEBUG(value.as<String>());
-        LAZYMESH_DEBUG(value.as<int32_t>());
-
         if (key == 0)
         {
           key = value.as<uint32_t>();
           if (key == 0)
           {
+            // Can't use 0 again or it would break sync
             key = DATA_ID_INVALID;
           }
+          continue;
         }
-
-        if (this->listenFor.find(key) != this->listenFor.end())
+        else
         {
-          LAZYMESH_DEBUG("Listening For");
-
-          if (value.is<JsonInteger>())
+          if (key == DATA_ID_DESTINATION)
           {
-            this->state[key] = value;
-          }
-          else if (value.is<JsonString>())
-          {
-            this->stringState[key] = value.as<std::string>();
-          }
-        }
-
-        if (key == DATA_ID_WANTED)
-        {
-          LAZYMESH_DEBUG("Wanted");
-          for (JsonVariant want : value.as<JsonArray>())
-          {
-            // Don't let this get too big
-            if (this->toSend.size() < 32)
+            if (value.as<uint64_t>() != this->nodeID)
             {
-              LAZYMESH_DEBUG(want.as<uint32_t>());
-              this->toSend.insert(want.as<uint32_t>());
+              forUs = false;
+            }
+            else
+            {
+              // If we see one match, then it's for us
+              // because there could be multiple destinations
+              // in one packet
+              forUs = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (forUs)
+      {
+        bool writeEnabled = false;
+        key = 0;
+        for (JsonVariant value : doc.as<JsonArray>())
+        {
+          LAZYMESH_DEBUG("Recv");
+          LAZYMESH_DEBUG(value.as<String>());
+
+          if (key == 0)
+          {
+            key = value.as<uint32_t>();
+            if (key == 0)
+            {
+              // Can't use 0 again or it would break sync
+              key = DATA_ID_INVALID;
+            }
+            continue;
+          }
+
+          if (key == DATA_ID_WRITE_COMMAND)
+          {
+            if (value.as<uint32_t>() == 1)
+            {
+              writeEnabled = true;
             }
           }
 
-          // Already used it, next is the new key
-          key = 0;
+          if (writeEnabled)
+          {
+            if (this->listenFor.find(key) != this->listenFor.end())
+            {
+              LAZYMESH_DEBUG("Listening For");
+
+              if (value.is<JsonInteger>())
+              {
+                this->state[key] = value;
+              }
+              else if (value.is<JsonString>())
+              {
+                this->stringState[key] = value.as<std::string>();
+              }
+            }
+          }
+
+          if (key == DATA_ID_WANTED)
+          {
+            LAZYMESH_DEBUG("Wanted");
+            for (JsonVariant want : value.as<JsonArray>())
+            {
+              LAZYMESH_DEBUG("Req")
+              LAZYMESH_DEBUG(want.as<uint32_t>());
+              if (this->canSend.find(want.as<uint32_t>()) != this->canSend.end())
+              {
+                LAZYMESH_DEBUG("We can send it!");
+                // Don't let this get too big
+                if (this->toSend.size() < 32)
+                {
+                  LAZYMESH_DEBUG("We have room in tosend buffer");
+                  this->toSend.insert(want.as<uint32_t>());
+                }
+              }
+            }
+
+            // Already used it, next is the new key
+            key = 0;
+          }
         }
       }
     }
@@ -660,9 +724,14 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
       LAZYMESH_DEBUG("Not an array");
       trusted = false;
     }
-    this->onReceivePacket(payload, meta);
+
+    if (forUs)
+    {
+      this->onReceivePacket(payload, meta);
+    }
   }
 
+  // Still do time sync even if we don't match the node filter
   if (trusted)
   {
     this->meshNode->setTime(unixTime, LAZYMESH_TIME_TRUST_LEVEL_TRUSTED);
@@ -699,7 +768,18 @@ void LazymeshChannel::poll()
   {
     LAZYMESH_DEBUG("Send Announce");
     uint8_t packet[256];
+
+    LazymeshPayload payload;
+    // We don't technically need this but it makes
+    // it easier to see who else is on the channel with you
     int size = 0;
+
+    if (this->nodeID)
+    {
+      payload.addNodeID(this->nodeID);
+    }
+
+    size = serializeMsgPack(payload.jsonDoc, packet, 128);
     // Send three minutes ahead.
     this->encodeDataToPacket(packet, &size, 120);
 
@@ -713,7 +793,7 @@ void LazymeshChannel::poll()
 
     if (this->lastSentAnnounce == 0)
     {
-      int size = 0;
+      size = serializeMsgPack(payload.jsonDoc, packet, 128);
       // If we have just powered up or manually commanded
       // Also send the current one, so nobody has to wait 3 minutes.
       this->encodeDataToPacket(packet, &size, 120);

@@ -73,7 +73,8 @@ data items.  192-256 are reserved for application-specific messages.
 
 ID 32 is for text messages, which can be prefixed with a username and a colon.
 
-ID 2 is used for a unique ID, wich can be a string, bytes, or integer, but must be unique per-channel.  Many applications don't actually need this.
+ID 2 is used for a unique ID, which must be an integer.  Many applications
+might not need this at all.
 
 ## Transports
 
