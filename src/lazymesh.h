@@ -61,8 +61,8 @@ typedef enum LazymeshTimeTrustLevel
 // Header, header, meshRouteNumber, path loss, 8 bytes randomness for nonce, 4 byte time, auth tag
 #define PACKET_OVERHEAD (1 + 1 + 1 + 1 + 8 + 4 + ROUTING_ID_LEN + AUTH_TAG_LEN)
 
-#define LAZYMESH_DEBUG(x) Serial.println(x);
-//#define LAZYMESH_DEBUG(x)
+//#define LAZYMESH_DEBUG(x) Serial.println(x);
+#define LAZYMESH_DEBUG(x)
 
 #define CONTROL_PACKET_TYPE_OFFSET 2
 #define CONTROL_PACKET_DATA_OFFSET 3

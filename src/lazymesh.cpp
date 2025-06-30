@@ -192,8 +192,6 @@ void LazymeshChannel::flushToSend(uint8_t *packet, int *size)
       LAZYMESH_DEBUG("I should send");
       LAZYMESH_DEBUG(num);
 
-      Serial.flush();
-
       if (state.find(num) != state.end())
       {
         LAZYMESH_DEBUG("Adding number");
