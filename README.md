@@ -24,6 +24,10 @@ with the node via MQTT from the internet.  Just set a username, add a channel,
 and enter the channel password.  The channel name can be anything and only affects
 the labeling in the UI.
 
+You can also try the Read/Write data example sketch. This exposes data ID 195 as readable, and data ID 196 as readable and writable.   Go to the site, enter your channel details, and use the data request dialog to request ID 196 from all devices.
+
+Then click "set" and set it to something else, and try reading it again.
+
 The Web Client is currently hardcoded to use test.mosquitto.org, this will
 change in the future.
 
