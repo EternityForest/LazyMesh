@@ -50,7 +50,7 @@ void setup() {
   node.addTransport(&mqtt);
 
 
-  WiFi.begin("SSID", "Password");
+  WiFi.begin("TheGlade", "notallwhowanderarelost");
 
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -89,6 +89,13 @@ void setup() {
   channel.listenFor.insert(196);
   channel.canSend.insert(196);
   channel.setIntegerValue(196, random(255));
+
+  // Better to pick a real random value
+  channel.nodeID = random(10000);
+
+  // Friendly name
+  channel.canSend.insert(3);
+  channel.setStringValue(3, "FriendlyNameHere");
 }
 
 unsigned long lastSent = 0;

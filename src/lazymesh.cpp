@@ -669,8 +669,10 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
 
           if (key == DATA_ID_WRITE_COMMAND)
           {
+            LAZYMESH_DEBUG("Write enabled");
             if (value.as<uint32_t>() == 1)
             {
+              LAZYMESH_DEBUG("Write enabled");
               writeEnabled = true;
             }
           }
@@ -679,13 +681,13 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
           {
             if (this->listenFor.find(key) != this->listenFor.end())
             {
-              LAZYMESH_DEBUG("Listening For");
+              LAZYMESH_DEBUG("Was listening for it");
 
-              if (value.is<JsonInteger>())
+              if (this->state.find(key) != this->state.end())
               {
-                this->state[key] = value;
+                this->state[key] = value.as<int32_t>();
               }
-              else if (value.is<JsonString>())
+              else
               {
                 this->stringState[key] = value.as<std::string>();
               }
@@ -710,10 +712,9 @@ bool LazymeshChannel::handlePacket(LazymeshPacketMetadata &meta)
                 }
               }
             }
-
-            // Already used it, next is the new key
-            key = 0;
           }
+          // Already used it, next is the new key
+          key = 0;
         }
       }
     }
