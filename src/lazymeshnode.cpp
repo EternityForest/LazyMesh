@@ -40,9 +40,11 @@ void LazymeshNode::poll()
 
         // Use the lower layer to count how many copies marked with the first flag we have seen
         int repeaterCopiesOfPacket = 0;
+        int channelAcksOfPacket = 0;
         if (this->seenPackets.find(packetId) != this->seenPackets.end())
         {
             repeaterCopiesOfPacket = this->seenPackets[packetId].uniqueRepeatersSeen;
+            channelAcksOfPacket = this->seenPackets[packetId].channelAcksSeen;
         }
 
         // Handle packets that want an ack but have timed out.
@@ -56,7 +58,7 @@ void LazymeshNode::poll()
             LAZYMESH_DEBUG("expectRepeaterAck:");
             LAZYMESH_DEBUG((*it).expectRepeaterAck);
             LAZYMESH_DEBUG("gotChannelAck:");
-            LAZYMESH_DEBUG((*it).gotChannelAck);
+            LAZYMESH_DEBUG(channelAcksOfPacket);
             LAZYMESH_DEBUG("gotRepeaterAck:");
             LAZYMESH_DEBUG(repeaterCopiesOfPacket);
             LAZYMESH_DEBUG("Attempts:");
@@ -67,20 +69,29 @@ void LazymeshNode::poll()
             LAZYMESH_DEBUG(ESP.getFreeHeap());
 #endif
 
+            this->createNeigborChannelInterestRecord(truncatedRoutingId);
+
             // If we have neigbors interested in that channel, then set the interest level
             // based on how many acks we got
             if (this->neighborChannelInterests.find(truncatedRoutingId) != this->neighborChannelInterests.end())
             {
+
+                int acksForThisPacket = 0;
+                if (this->seenPackets.find(packetId) != this->seenPackets.end())
+                {
+                    acksForThisPacket = this->seenPackets[packetId].channelAcksSeen;
+                }
+
                 LAZYMESH_DEBUG("Found neighbor interest record, updating");
                 this->neighborChannelInterests[truncatedRoutingId].timestamp = millis();
-                if ((*it).gotChannelAck > this->neighborChannelInterests[truncatedRoutingId].interestLevel)
+                if (acksForThisPacket > this->neighborChannelInterests[truncatedRoutingId].interestLevel)
                 {
-                    this->neighborChannelInterests[truncatedRoutingId].interestLevel = (*it).gotChannelAck;
+                    this->neighborChannelInterests[truncatedRoutingId].interestLevel = acksForThisPacket;
                 }
                 else
                 {
                     // Slowly move towards the new value
-                    this->neighborChannelInterests[truncatedRoutingId].interestLevel = this->neighborChannelInterests[truncatedRoutingId].interestLevel * 0.90 + (*it).gotChannelAck * 0.10;
+                    this->neighborChannelInterests[truncatedRoutingId].interestLevel = this->neighborChannelInterests[truncatedRoutingId].interestLevel * 0.90 + acksForThisPacket * 0.10;
                 }
             }
 
@@ -107,7 +118,7 @@ void LazymeshNode::poll()
 
         // If it's an unfinished reliable packet, or a fire and forget packet, try to send it
         // Also if no acks are expected just send once
-        if ((*it).expectChannelAck > ((*it).gotChannelAck) || (*it).expectRepeaterAck > repeaterCopiesOfPacket || !(*it).expectAck || (*it).attemptsUsed == 0)
+        if ((*it).expectChannelAck > channelAcksOfPacket || (*it).expectRepeaterAck > repeaterCopiesOfPacket || !(*it).expectAck || (*it).attemptsUsed == 0)
         {
             if (millis() - (*it).lastSendAttempt > 500 || (*it).lastSendAttempt == 0)
             {
@@ -116,14 +127,17 @@ void LazymeshNode::poll()
 
                 bool shouldSkip = false;
 
-                // Detect an ACK flood and just stop.
-                if (packetType == PACKET_TYPE_CONTROL)
+                // Detect that the network is getting bogged down and just stop.
+
+                if (channelAcksOfPacket > 8)
                 {
-                    if ((*it).gotChannelAck > 8)
-                    {
-                        LAZYMESH_DEBUG("Too many channel acks");
-                        shouldSkip = true;
-                    }
+                    LAZYMESH_DEBUG("Too many channel acks");
+                    shouldSkip = true;
+                }
+                if (repeaterCopiesOfPacket > 8)
+                {
+                    LAZYMESH_DEBUG("Too many repeater copies of this packet");
+                    shouldSkip = true;
                 }
 
                 bool sent = false;
@@ -235,14 +249,35 @@ unsigned long LazymeshNode::getUnixTime()
     return unix_time_at_millis + (millis() - millis_timestamp) / 1000;
 }
 
-bool LazymeshNode::hasSeenPacket(const uint8_t *packet, LazymeshTransport *transport)
+bool LazymeshNode::createSeenPacketReport(uint64_t packetid)
 {
     // Maintain a list of the last 1024 packets.  This should use about 20kb of RAM
     // We make sure the packet IDs have the timestamp so we can sort oldest to newest
     if (this->seenPackets.size() > SEEN_PACKET_LIST_MAX_SIZE)
     {
-        this->seenPackets.erase(this->seenPackets.begin());
+        uint32_t oldest_timestamp = (this->seenPackets.begin()->first) >> 32;
+        uint32_t timestamp = this->getUnixTime();
+        if (oldest_timestamp < (timestamp - 120))
+        {
+            this->seenPackets.erase(this->seenPackets.begin());
+        }
+        else
+        {
+            return false;
+        }
     }
+
+    bool seen = seenPackets.find(packetid) != seenPackets.end();
+    if (!seen)
+    {
+        seenPackets.emplace(packetid, LazymeshSeenPacketReport());
+    }
+
+    return true;
+}
+
+bool LazymeshNode::hasSeenPacket(const uint8_t *packet, const LazymeshTransport *transport)
+{
 
     uint64_t packetid = 0;
 
@@ -268,11 +303,10 @@ bool LazymeshNode::hasSeenPacket(const uint8_t *packet, LazymeshTransport *trans
         }
     }
 
-    bool seen = seenPackets.find(packetid) != seenPackets.end();
-    if (!seen)
+    // If we can't create a seen packet report
+    if (!this->createSeenPacketReport(packetid))
     {
-        LAZYMESH_DEBUG("Seen packet for the first time");
-        seenPackets.emplace(packetid, LazymeshSeenPacketReport());
+        return true;
     }
 
     // Don't increment on resends, or non-repeated packets
@@ -290,9 +324,20 @@ bool LazymeshNode::hasSeenPacket(const uint8_t *packet, LazymeshTransport *trans
                 seenPackets[packetid].uniqueRepeatersSeen += 1;
             }
         }
+
+        // Treat the first send attempt from an interested repeater like they ACKed
+        if(packet[HEADER_2_BYTE_OFFSET] & (1 << HEADER_2_INTERESTED_BIT))
+        {
+            LAZYMESH_DEBUG("Including in interest count")
+            seenPackets[packetid].channelAcksSeen += 1;
+        }
     }
 
-    seenPackets[packetid].totalSeen += 1;
+    // If we never saw an actual copy, just an ack, don't count it
+    // as a repeat
+    bool seen = seenPackets[packetid].totalActualCopiesSeen > 0;
+
+    seenPackets[packetid].totalActualCopiesSeen += 1;
 
     return seen;
 };
@@ -310,26 +355,9 @@ void LazymeshNode::handleControlPacket(uint8_t type, const uint8_t *packet, int 
         LAZYMESH_DEBUG("Got channel ack");
         LAZYMESH_DEBUG(packetID);
 
-        for (std::vector<LazymeshQueuedPacket>::iterator it = this->queuedPackets.begin(); it != this->queuedPackets.end(); ++it)
+        if (this->createSeenPacketReport(packetID))
         {
-            LAZYMESH_DEBUG("Checking queued packet");
-            LAZYMESH_DEBUG((*it).packetID);
-            // Only track ACKs on the same transport which this was supposed to be aimed at
-            if ((*it).packetID == packetID && ((*it).destination == transport || (*it).destination == NULL))
-            {
-                if ((*it).packet.size() > PACKET_OVERHEAD)
-                {
-                    uint64_t truncatedRoutingId = 0;
-                    memcpy(&truncatedRoutingId, (*it).packet.data(), 8);
-
-                    // Mark this as a packet people in the immediate area care about.
-                    this->doNeighborChannelInterest(truncatedRoutingId);
-                    (*it).gotChannelAck += 1;
-
-                    LAZYMESH_DEBUG("Channel ack incremented to");
-                    LAZYMESH_DEBUG((*it).gotChannelAck);
-                }
-            }
+            this->seenPackets[packetID].channelAcksSeen += 1;
         }
     }
 
@@ -343,15 +371,16 @@ void LazymeshNode::handleControlPacket(uint8_t type, const uint8_t *packet, int 
         // Look in the seenPackets
         // Count this like as if we saw it. Assume we will always see the packet before it's
         // ack
-        if (this->seenPackets.find(packetID) != this->seenPackets.end())
+        // That's not actually a good assumption on high packet loss channels but
+        // it should work on low packet loss channels
+        if (this->createSeenPacketReport(packetID))
         {
-            LAZYMESH_DEBUG("Incrementing repeater packet count");
             this->seenPackets[packetID].uniqueRepeatersSeen += 1;
         }
     }
 }
 
-void LazymeshNode::sendAcknowledgementPacket(const uint8_t *packet, int size, const LazymeshChannel *localChannel, LazymeshTransport *transport)
+void LazymeshNode::sendAcknowledgementPacket(const uint8_t *packet, int size, bool channelAck, LazymeshTransport *transport)
 {
     if (!transport)
     {
@@ -375,7 +404,7 @@ void LazymeshNode::sendAcknowledgementPacket(const uint8_t *packet, int size, co
     buffer[HEADER_2_BYTE_OFFSET] = 0;
     buffer[HEADER_2_BYTE_OFFSET] |= 1 << HEADER_2_FIRST_SEND_ATTEMPT_BIT;
 
-    if (localChannel)
+    if (channelAck)
     {
         LAZYMESH_DEBUG("Sending channel ack");
         buffer[CONTROL_PACKET_TYPE_OFFSET] = CONTROL_TYPE_CHANNEL_ACKNOWLEDGE;
@@ -433,7 +462,6 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
     }
     LAZYMESH_DEBUG("not duplicate packet");
 
-
     // Mark it as repeated or repeatable or generally to be included in repeater counts.
     if (source || this->isRouteEnabled(meshRouteNumber))
     {
@@ -463,15 +491,24 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
                 if ((*it)->handlePacket(meta))
                 {
 
-                    if ((!localHandled) && packetType == PACKET_TYPE_DATA_RELIABLE)
-                    {
-                        this->sendAcknowledgementPacket(packet, size, (*it), source);
-                    }
                     localHandled = true;
                 }
             }
         }
     }
+
+    // If we repeat the packet we might not need an ack because this bit
+    // serves as an ack
+    if (localHandled && packetType == PACKET_TYPE_DATA_RELIABLE)
+    {
+        packet[HEADER_2_BYTE_OFFSET] |= 1 << HEADER_2_INTERESTED_BIT;
+    }
+    else
+    {
+        packet[HEADER_2_BYTE_OFFSET] &= ~(1 << HEADER_2_INTERESTED_BIT);
+    }
+
+    bool didRepeat = false;
 
     if (getPacketTTL(packet) > 0)
     {
@@ -479,17 +516,16 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
 
         decrementTTLInPlace(packet);
 
-
         bool globalRoute = false;
         if (this->isRouteEnabled(meshRouteNumber) || source == NULL)
         {
             LAZYMESH_DEBUG("Packet can be routed");
             // Non-loopback transports use repeater ACKs to count the repeats
+            // very different from channel acks
             if (source && (!source->allowLoopbackRouting) && packetType == PACKET_TYPE_DATA_RELIABLE)
             {
-                this->sendAcknowledgementPacket(packet, size, nullptr, source);
+                this->sendAcknowledgementPacket(packet, size, false, source);
             }
-
 
             bool canGlobalRoute = packet[HEADER_1_BYTE_OFFSET] & (1 << GLOBAL_ROUTE_OFFSET);
             bool wasGlobalRouted = packet[HEADER_1_BYTE_OFFSET] & (1 << WAS_GLOBAL_ROUTED_OFFSET);
@@ -551,17 +587,21 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
 
                 this->queuedPackets.emplace_back(packet, size, channelListeners, this->repeaterListeners[route_id] + 0.5);
                 this->queuedPackets.back().source = source;
-
-                // packet itself is an implicit ack from the sender, so we count it
-                // as an interested listener
-                if (source)
-                {
-                    if (lastHopPathLoss(packet) == 0)
-                    {
-                        this->queuedPackets.back().gotChannelAck += 1;
-                    }
-                }
+                didRepeat = true;
             }
+        }
+    }
+
+
+    // If we did not repeat it, we need to send an ack if we are interested
+    if (!didRepeat)
+    {
+        if (localHandled && packetType == PACKET_TYPE_DATA_RELIABLE)
+        {
+            // We have to broadcast this to everyone, because
+            // otherwise someone could see the packet through a deifferent channel
+            // and not see the ACK
+            this->sendAcknowledgementPacket(packet, size, true, nullptr);
         }
     }
 }

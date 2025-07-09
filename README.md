@@ -130,6 +130,11 @@ All numbers are little-endian.
         Marks that this packet should be included when counting repeaters.
         Set it if you would repeat the packet or one like it, even if you originated it.
 
+    1 bit interest bit:
+        If this is set, the node who sent it is directly interested in the channel,
+        not purely just a repeater.  If first send is also set, it is treated as an
+        implicit ack
+
     1 bit location enabled
         If this bit is set, repeaters may add location metadata to the packets forwarded to the internet. This metadata must be encrypted with the routing ID as the key,
         meaning nearby people could track you for 1 hour after you get out of range.
@@ -186,24 +191,45 @@ N bytes ciphertext:
 
 Some implementations may choose to entirely ignore this.
 
+ACKs are purely per hop unless a higher protocol layer wants to do end to end ACKs.
+
 Ack packets are not repeated or routed or anything, nor are they authenticated.  Every step of mesh repeating has it's own acknowlegement, from the original sender's perspective, it's fire and forget.
 
 Like Meshtastic and most others, the protocol is "semi-reliable", there are, like all networks, edge cases causing failure.  
 
 Real reliability must be done at a higher level.
 
-For every packet, every interested lister to that specific channel sends an channel acknowlege exactly once.
+### Channel ACK
 
-For every packet on a transport that does not support loopback routing, repeaters send a repeater acknowlege the first time they see a packet.
+For every packet, every interested lister to that specific channel sends an channel acknowlege exactly once, unless it detects that more than 8 ACKS have been sent by other nodes already.
 
-For packets on transports that do support loopback, nodes do not need to send the acknowledge,
-because the repeated packet with the "first copy from this node" flag and the "I'm a repeater for packets like this" flag serves as the acknowledge.
+This packet must be sent on all transports, not just the one where the packet came
+from, otherwise other nodes might get the wrong idea of how many listeners there are.
 
-This lets a node determine how many other repeaters and channel listeners are in the area.
+If the original packet does not allow slow transports, the 
 
+
+### Repeater ACK
+
+For every packet on a transport that does not support loopback routing, repeaters send a repeater acknowlege the first time they see a packet, and only the first time.
+
+For packets on transports that do support loopback, nodes do not need to send the acknowledge, because the repeated packet with the "first copy from this node" flag and the "I'm a repeater for packets like this" flag serves as the acknowledge.
+
+
+### Implicit channel ACK
+
+When a pakcet has both the first send attempt bit and the interest flag,
+it's like an implicit ACK. If we are sending a copy of the packet, we don't
+need to also send an ACK to add ourselves to the interest count.
+
+### Resending
 
 Nodes may resend a message a few times if they get fewer than expected replies.
 
+Nodes must never expect more than 6 repeaters and 6 channel listeners, even if they
+get more replies, as the simple ACK scheme becomes innaccurate past that if packet loss is moderate.
+
+### Structure
 
 ```
 1 byte header:
@@ -219,12 +245,6 @@ Nodes may resend a message a few times if they get fewer than expected replies.
 
 4 byte message ID:
   just the first 4 bytes of the random IV from the packet we are ACKing
-
-4 byte ack ID:
-
-Random number unique to the node, for debugging only.  More advanced implementations
-can use this to better count nodes.  Must not be the same for all channels on a node and must
-change periodically for privacy.
 
 ```
 

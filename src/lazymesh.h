@@ -55,6 +55,10 @@ typedef enum LazymeshTimeTrustLevel
 // or would repeat it if it were not from local
 #define HEADER_2_REPEATER_BIT 1
 
+// This bit says that the sending node is interested in the packet and not 
+// just a repeater
+#define HEADER_2_INTERESTED_BIT 2
+
 // Don't use the full 220, assume bluetooth and the like have their own limits
 #define MAX_PACKET_SIZE 220
 
@@ -223,8 +227,10 @@ public:
 class LazymeshSeenPacketReport
 {
 public:
-  uint8_t totalSeen = 0;
+  uint8_t totalActualCopiesSeen = 0;
   uint8_t uniqueRepeatersSeen = 0;
+  uint8_t repeaterAcksSeen = 0;
+  uint8_t channelAcksSeen = 0;
 };
 
 class LazymeshPacketMetadata
@@ -264,11 +270,7 @@ public:
 
   int expectChannelAck = 0;
   int expectRepeaterAck = 0;
-
-  int gotChannelAck = 0;
-  int gotRepeaterAck = 0;
   
-
   LazymeshQueuedPacket(uint8_t *packet, int len, int expectChannelListeners, int expectRepeaterListeners);
   ~LazymeshQueuedPacket();
 };
@@ -328,6 +330,7 @@ public:
 
   // Track what data objects we want from the other node.
   std::set<uint32_t> wanted;
+
 
   // This tracks what data we can send on request
   std::set<uint32_t> canSend;
@@ -442,7 +445,12 @@ private:
 
   // Return true if we have seen this packet,
   // Also mark it seen.
-  bool hasSeenPacket(const uint8_t *packet, LazymeshTransport *transport);
+  bool hasSeenPacket(const uint8_t *packet, const LazymeshTransport *transport);
+
+  // Create the blank report
+  // Don;t actualy mark it as seen
+  // return false if buffer is full
+  bool createSeenPacketReport(uint64_t packetID);
 
   // Send on the non-global routing transports.
   // Global routing is handled specially.
@@ -500,7 +508,7 @@ public:
     this->channels.clear();
   }
 
-  void doNeighborChannelInterest(uint64_t truncatedChannelHash)
+  void createNeigborChannelInterestRecord(uint64_t truncatedChannelHash)
   {
     // Clear any with timestamp older than 70 minutes
     if (this->neighborChannelInterests.size() > 512)
@@ -538,7 +546,7 @@ public:
     }
   }
 
-  void sendAcknowledgementPacket(const uint8_t *packet, int size, const LazymeshChannel *localChannel, LazymeshTransport *transport);
+  void sendAcknowledgementPacket(const uint8_t *packet, int size,bool channel, LazymeshTransport *transport);
 
   // Source is null and if it comes from local, channel can be null if it comes from someone else
   void handlePacket(LazymeshPacketMetadata &meta);

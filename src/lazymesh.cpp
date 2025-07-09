@@ -27,6 +27,17 @@ LazymeshQueuedPacket::LazymeshQueuedPacket(uint8_t *newpacket, int len, int expe
 {
   this->expectChannelAck = expectChannelListeners;
   this->expectRepeaterAck = expectRepeaterListeners;
+
+  if (this->expectChannelAck > 6)
+  {
+    this->expectChannelAck = 6;
+  }
+
+  if(this->expectRepeaterAck > 6)
+  {
+    this->expectRepeaterAck = 6;
+  }
+
   this->packet.resize(len);
 
   memcpy(this->packet.data(), newpacket, len);
@@ -278,6 +289,7 @@ void LazymeshChannel::encodeDataToPacket(uint8_t *packet, int *size, int timeAdv
 
   uint8_t packetbuffer[256];
 
+  memset(packetbuffer, 0, 256);
   // Header byte 1
 
   // 2 bit packet type
