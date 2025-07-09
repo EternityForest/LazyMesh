@@ -360,24 +360,6 @@ void LazymeshNode::handleControlPacket(uint8_t type, const uint8_t *packet, int 
             this->seenPackets[packetID].channelAcksSeen += 1;
         }
     }
-
-    if (type == CONTROL_TYPE_REPEATER_ACKNOWLEDGE)
-    {
-        uint64_t packetID = 0;
-        memcpy(&packetID, packet, 8);
-
-        LAZYMESH_DEBUG("Got repeater ack");
-        LAZYMESH_DEBUG(packetID);
-        // Look in the seenPackets
-        // Count this like as if we saw it. Assume we will always see the packet before it's
-        // ack
-        // That's not actually a good assumption on high packet loss channels but
-        // it should work on low packet loss channels
-        if (this->createSeenPacketReport(packetID))
-        {
-            this->seenPackets[packetID].uniqueRepeatersSeen += 1;
-        }
-    }
 }
 
 void LazymeshNode::sendAcknowledgementPacket(const uint8_t *packet, int size, bool channelAck, LazymeshTransport *transport)
@@ -412,8 +394,7 @@ void LazymeshNode::sendAcknowledgementPacket(const uint8_t *packet, int size, bo
     else
     {
 
-        LAZYMESH_DEBUG("Sending repeater ack"); //
-        buffer[CONTROL_PACKET_TYPE_OFFSET] = CONTROL_TYPE_REPEATER_ACKNOWLEDGE;
+        LAZYMESH_DEBUG("REPEATER ACKS DON'T EXIST NOW"); //
     }
 
     uint64_t packetID = 0;
@@ -520,12 +501,6 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
         if (this->isRouteEnabled(meshRouteNumber) || source == NULL)
         {
             LAZYMESH_DEBUG("Packet can be routed");
-            // Non-loopback transports use repeater ACKs to count the repeats
-            // very different from channel acks
-            if (source && (!source->allowLoopbackRouting) && packetType == PACKET_TYPE_DATA_RELIABLE)
-            {
-                this->sendAcknowledgementPacket(packet, size, false, source);
-            }
 
             bool canGlobalRoute = packet[HEADER_1_BYTE_OFFSET] & (1 << GLOBAL_ROUTE_OFFSET);
             bool wasGlobalRouted = packet[HEADER_1_BYTE_OFFSET] & (1 << WAS_GLOBAL_ROUTED_OFFSET);
@@ -535,13 +510,6 @@ void LazymeshNode::handleDataPacket(const uint8_t *incomingPacket, int size, Laz
                 LAZYMESH_DEBUG("Packet can be global routed");
                 for (std::vector<LazymeshTransport *>::iterator it = this->transports.begin(); it != this->transports.end(); ++it)
                 {
-                    if ((*it) == source)
-                    {
-                        if (!(*it)->allowLoopbackRouting)
-                        {
-                            continue;
-                        }
-                    }
                     globalRoute = (*it)->globalRoutePacket(packet, size);
                     if (globalRoute)
                     {
@@ -674,15 +642,6 @@ bool LazymeshNode::routePacketOutgoing(uint8_t *packet, int size, LazymeshTransp
         {
             LAZYMESH_DEBUG("Skipping on this transport, slow route disabled");
             continue;
-        }
-
-        if ((*it) == source)
-        {
-            if (!(*it)->allowLoopbackRouting)
-            {
-                LAZYMESH_DEBUG("Skipping on this transport, loopback disabled");
-                continue;
-            }
         }
 
         if (destination)

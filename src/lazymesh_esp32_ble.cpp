@@ -47,7 +47,6 @@ public:
 };
 
 BLEExtendedAdvTransport::BLEExtendedAdvTransport() {
-this->allowLoopbackRouting = true;
 // Packet loss is so high we can't use the normal scheme
 // and instead must just send multiple times.
 this->enableAutoResend = false;

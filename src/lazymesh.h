@@ -78,10 +78,6 @@ typedef enum LazymeshTimeTrustLevel
 // in the packet
 #define CONTROL_TYPE_CHANNEL_ACKNOWLEDGE 1
 
-// Only used on transports that don't have loopback
-// otherwise we would just send the packet back
-#define CONTROL_TYPE_REPEATER_ACKNOWLEDGE 2
-
 #define DATA_ID_WANTED 1
 #define DATA_ID_NODE_ID 2
 #define DATA_ID_DESTINATION 5
@@ -371,7 +367,6 @@ class LazymeshTransport
 public:
   std::string name = "";
   LazymeshNode *node = NULL;
-  bool allowLoopbackRouting = false;
 
   // Is the transport fast enough that we don't need
   // to be concerned with a packet or two per second of bandwidth?

@@ -206,21 +206,22 @@ For every packet, every interested lister to that specific channel sends an chan
 This packet must be sent on all transports, not just the one where the packet came
 from, otherwise other nodes might get the wrong idea of how many listeners there are.
 
-If the original packet does not allow slow transports, the 
-
-
-### Repeater ACK
-
-For every packet on a transport that does not support loopback routing, repeaters send a repeater acknowlege the first time they see a packet, and only the first time.
-
-For packets on transports that do support loopback, nodes do not need to send the acknowledge, because the repeated packet with the "first copy from this node" flag and the "I'm a repeater for packets like this" flag serves as the acknowledge.
-
 
 ### Implicit channel ACK
 
 When a pakcet has both the first send attempt bit and the interest flag,
 it's like an implicit ACK. If we are sending a copy of the packet, we don't
 need to also send an ACK to add ourselves to the interest count.
+
+### Repeater Ack
+
+Repeaters acknowledge by just sending a copy of the packet, when it's marked
+with the first copy flag, we count it.  For this reason, transports like WiFi
+must repeat even though it doesn't really make sense.
+
+This does NOT apply to global routing transports, global routing is handled
+separately and not subject to any kind of ACKs or repeats or anything,
+we assume the MQTT server handles everything.
 
 ### Resending
 
@@ -239,9 +240,9 @@ get more replies, as the simple ACK scheme becomes innaccurate past that if pack
    Same as on the data packets. Not really used at the moment
 
 1 byte subtype:
-   CONTROL_TYPE_CHANNEL_ACKNOWLEDGE or CONTROL_TYPE_REPEATER_ACKNOWLEDGE
-   You can acknowlege as a channel listener or as a repeater,
-   so the sender knows how many of each there are.
+   CONTROL_TYPE_CHANNEL_ACKNOWLEDGE 
+   You can acknowlege as a channel listener
+   so the sender knows how many there are.
 
 4 byte message ID:
   just the first 4 bytes of the random IV from the packet we are ACKing
